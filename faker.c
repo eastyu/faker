@@ -498,7 +498,7 @@ void net_worker_close_client(struct net_worker* worker, struct net_client* clien
 {
     log_debug("client 0x%08X with socket %d is being closed with status %d",
         client, client->client_socket, client->client_status);
-    
+
     epoll_ctl(worker->epoll_handle, EPOLL_CTL_DEL, client->client_socket, NULL);
 
     close(client->client_socket);
@@ -771,7 +771,8 @@ int main(int argc, char const *argv[])
     if (-1 == sigfillset(&sigset))
     {
         log_error("system call `sigfillset` failed with error %d", errno);
-
+    _e3:
+        net_worker_destroy(worker);
         goto _e2;
     }
 
@@ -781,8 +782,7 @@ int main(int argc, char const *argv[])
     {
         log_error("system call `pthread_create` failed with error %d", result);
 
-        net_worker_destroy(worker);
-        goto _e2;
+        goto _e3;
     }
 
     while (1)
