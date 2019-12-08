@@ -130,7 +130,7 @@ int system_get_time()
     return tv.tv_sec * 1000 + tv.tv_usec / 1000;
 }
 
-int set_socket_nonblock(int socket)
+int set_socket_to_nonblock(int socket)
 {
     int flags = fcntl(socket, F_GETFL, 0);
     if (-1 == flags)
@@ -565,9 +565,9 @@ int net_worker_accept_new_client(struct net_worker* worker)
 
         client->registered_event = event.events;
 
-        if (-1 == set_socket_nonblock(client_socket))
+        if (-1 == set_socket_to_nonblock(client_socket))
         {
-            log_error("function call `set_socket_nonblock` failed");
+            log_error("function call `set_socket_to_nonblock` failed");
 
             goto _e2;
         }
