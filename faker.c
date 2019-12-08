@@ -21,6 +21,7 @@
 #define CONFIG_LISTEN_BACKLOG               256
 #define CONFIG_LOG_LEVEL                    LOG_LEVEL_DEBUG
 #define CONFIG_RECV_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
+#define CONFIG_SEND_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
 
 #define EPOLL_EVENT_SIZE                    256
 
@@ -354,7 +355,39 @@ _end:
     return 0;
 }
 
-int net_client_handle_data(struct net_client* client)
+int net_client_send_hello_world_test(struct net_client* client, struct net_worker* worker)
+{
+    char* http_resonse = "HTTP/1.1 200 OK\r\n"
+                         "Server: Faker/1.0\r\n"
+                         "Content-Type: text/html; charset=utf-8\r\n"
+                         "Content-Length: 11\r\n\r\n"
+                         "hello world";
+    struct net_buffer* buffer = net_buffer_create(CONFIG_SEND_BUFFER_SIZE);
+    if (NULL == buffer)
+    {
+        log_error("function call `net_buffer_create` failed");
+    _e1:
+        return -1;
+    }
+
+    memcpy(buffer->data_ptr, http_resonse, strlen(http_resonse));
+
+    buffer->data_size = strlen(http_resonse);
+
+    net_client_add_send_buffer(client, buffer);
+
+    if (-1 == net_client_send_data(client, worker))
+    {
+        log_error("function call `net_client_send_data` failed");
+
+        net_buffer_destroy(buffer);
+        goto _e1;
+    }
+
+    return 0;
+}
+
+int net_client_handle_data(struct net_client* client, struct net_worker* worker)
 {
     while (1)
     {
@@ -364,12 +397,30 @@ int net_client_handle_data(struct net_client* client)
             break;
         }
 
-        log_debug("%s", buffer->data_ptr);
+        while (buffer->data_size > 0)
+        {
+            char* ptr = strstr(buffer->data_ptr, "\r\n\r\n");
+            if (NULL == ptr)
+            {
+                break;
+            }
+
+            if (-1 == net_client_send_hello_world_test(client, worker))
+            {
+                return -1;
+            }
+
+            int offset = ptr - buffer->data_ptr + 4;
+
+            buffer->data_size -= offset;
+            buffer->data_ptr += offset;
+        }
 
         net_client_remove_receive_buffer(client, buffer);
 
         net_buffer_destroy(buffer);
     }
+
     return 0;
 }
 
@@ -407,7 +458,7 @@ int net_client_receive_data(struct net_client* client, struct net_worker* worker
         net_client_add_receive_buffer(client, buffer);
     }
 
-    if (-1 == net_client_handle_data(client))
+    if (-1 == net_client_handle_data(client, worker))
     {
         log_error("function call `net_client_handle_data` failed");
 
