@@ -19,7 +19,7 @@
 
 #define CONFIG_CLIENT_DEFAULT_TIMEOUT       (1800 * 1000)
 #define CONFIG_LISTEN_BACKLOG               256
-#define CONFIG_LOG_LEVEL                    LOG_LEVEL_DEBUG
+#define CONFIG_LOG_LEVEL                    LOG_LEVEL_ERROR
 #define CONFIG_RECV_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
 #define CONFIG_SEND_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
 
@@ -383,7 +383,7 @@ int net_client_send_hello_world_test(struct net_client* client, struct net_worke
         goto _e1;
     }
 
-    return 0;
+    return -1;
 }
 
 int net_client_handle_data(struct net_client* client, struct net_worker* worker)
@@ -447,7 +447,10 @@ int net_client_receive_data(struct net_client* client, struct net_worker* worker
                 break;
             }
 
-            log_error("system call `recv` failed with error %d", errno);
+            if (0 != length)
+            {
+                log_error("system call `recv` failed with error %d", errno);
+            }
 
             goto _e1;
         }
