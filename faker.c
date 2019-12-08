@@ -8,6 +8,7 @@
 
 #include <unistd.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <sys/epoll.h>
 #include <sys/types.h>
 #include <sys/time.h>
@@ -25,6 +26,7 @@
 #define LOG_BUFFER_SIZE                     4096
 
 #define NET_WORKER_STATUS_READY             0
+#define NET_WORKER_STATUS_EXIT              1
 
 #define NET_CLIENT_STATUS_CONNECTED         0
 
@@ -618,9 +620,40 @@ void net_worker_handle_client_event(struct net_worker* worker, struct epoll_even
     } while (0);
 }
 
+void net_worker_signal_handler(int signal, siginfo_t* sig_info, void* context)
+{
+    struct net_worker* worker = (struct net_worker*)sig_info->si_value.sival_ptr;
+    if (SIGINT == signal)
+    {
+        worker->worker_status = NET_WORKER_STATUS_EXIT;
+    }
+}
+
 void* net_worker_thread_main(void* args)
 {
     struct net_worker* worker = (struct net_worker*)args;
+
+    struct sigaction action = { { 0 } };
+    if (-1 == sigfillset(&action.sa_mask))
+    {
+        log_error("system call `sigfillset` failed with error %d", errno);
+    _e1:
+        return NULL;
+    }
+    
+    action.sa_sigaction = net_worker_signal_handler;
+    action.sa_flags = SA_SIGINFO | SA_RESTART;
+
+    int signums[] = { SIGINT, SIGUSR1, SIGUSR2 };
+    for (int i = 0; i < sizeof(signums) / sizeof(int); i++)
+    {
+        if (-1 == sigaction(signums[i], &action, NULL))
+        {
+            log_error("system call `sigaction` failed with error %d", errno);
+
+            goto _e1;
+        }
+    }
 
     while (1)
     {
