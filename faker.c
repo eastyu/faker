@@ -39,16 +39,16 @@
 #define container_of(ptr, type, member)     \
     (type*)((NULL == (ptr)) ? NULL : (char*)(ptr) - offsetof(type, member))
 
-#define log_debug(format, ...)        \
+#define log_debug(format, ...)              \
     write_log_to_file(LOG_LEVEL_DEBUG, __FILE__, __LINE__, format, ##__VA_ARGS__)
 
-#define log_info(format, ...)        \
+#define log_info(format, ...)               \
     write_log_to_file(LOG_LEVEL_INFO, __FILE__, __LINE__, format, ##__VA_ARGS__)
 
-#define log_warn(format, ...)        \
+#define log_warn(format, ...)               \
     write_log_to_file(LOG_LEVEL_WARN, __FILE__, __LINE__, format, ##__VA_ARGS__)
 
-#define log_error(format, ...)        \
+#define log_error(format, ...)              \
     write_log_to_file(LOG_LEVEL_ERROR, __FILE__, __LINE__, format, ##__VA_ARGS__)
 
 struct list_item
