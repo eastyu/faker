@@ -487,7 +487,7 @@ void net_worker_remove_client(struct net_worker* worker, struct net_client* clie
     linked_list_remove_item(&worker->__client_list, &client->__item);
 }
 
-void net_worker_add_client_to_list(struct net_worker* worker, struct net_client* client)
+void net_worker_add_client(struct net_worker* worker, struct net_client* client)
 {
     linked_list_add_item(&worker->__client_list, &client->__item);
 }
@@ -569,7 +569,7 @@ int net_worker_accept_new_client(struct net_worker* worker)
 
         net_client_reset_expire_time(client);
 
-        net_worker_add_client_to_list(worker, client);
+        net_worker_add_client(worker, client);
 
         log_debug("new client 0x%08X with socket %d is connected", client, client_socket);
     }
@@ -615,7 +615,7 @@ void net_worker_handle_client_event(struct net_worker* worker, struct epoll_even
 
         net_client_reset_expire_time(client);
 
-        net_worker_add_client_to_list(worker, client);
+        net_worker_add_client(worker, client);
 
     } while (0);
 }
