@@ -380,7 +380,6 @@ int net_client_send_hello_world_test(struct net_client* client, struct net_worke
     {
         log_error("function call `net_client_send_data` failed");
 
-        net_buffer_destroy(buffer);
         goto _e1;
     }
 
