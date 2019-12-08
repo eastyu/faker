@@ -31,6 +31,16 @@
 
 #define NET_CLIENT_STATUS_CONNECTED         0
 
+#define CLOSED_TIMEOUT                      0
+#define CLOSED_ERROR                        1
+#define CLOSED_EXIT                         2
+
+#define NET_CLIENT_TYPE_UNKNOWN             0
+#define NET_CLINET_TYPE_LOCAL_BROWSER       1
+#define NET_CLIENT_TYPE_REMOTE_SERVER       2
+#define NET_CLIENT_TYPE_CHANNEL_1           3
+#define NET_CLIENT_TYPE_CHANNEL_2           4
+
 #define LOG_LEVEL_DEBUG                     0
 #define LOG_LEVEL_INFO                      1
 #define LOG_LEVEL_WARN                      2
@@ -76,9 +86,10 @@ struct net_client
     int expire_time;
     int registered_event;
     int client_status;
+    int client_type;
+    struct list_item __item;
     struct linked_list __send_list;
     struct linked_list __receive_list;
-    struct list_item __item;
 };
 
 struct net_worker
@@ -225,7 +236,7 @@ void net_buffer_destroy(struct net_buffer* buffer)
     log_debug("buffer 0x%08X is destroyed", buffer);
 }
 
-struct net_client* net_client_create(int client_socket)
+struct net_client* net_client_create(int client_socket, int client_type)
 {
     struct net_client* client = calloc(1, sizeof(struct net_client));
     if (NULL == client)
@@ -236,6 +247,7 @@ struct net_client* net_client_create(int client_socket)
     }
 
     client->client_socket = client_socket;
+    client->client_type = client_type;
     client->client_status = NET_CLIENT_STATUS_CONNECTED;
 
     log_debug("client 0x%08X with socket %d is created", client, client_socket);
@@ -494,7 +506,7 @@ void net_worker_add_client(struct net_worker* worker, struct net_client* client)
     linked_list_add_item(&worker->__client_list, &client->__item);
 }
 
-void net_worker_close_client(struct net_worker* worker, struct net_client* client)
+void net_worker_close_client(struct net_worker* worker, struct net_client* client, int reason)
 {
     log_debug("client 0x%08X with socket %d is being closed with status %d",
         client, client->client_socket, client->client_status);
@@ -526,7 +538,7 @@ int net_worker_handle_client_timeout(struct net_worker* worker)
 
         net_worker_remove_client(worker, client);
 
-        net_worker_close_client(worker, client);
+        net_worker_close_client(worker, client, CLOSED_TIMEOUT);
     }
 
     return -1;
@@ -542,7 +554,7 @@ int net_worker_accept_new_client(struct net_worker* worker)
             break;
         }
 
-        struct net_client* client = net_client_create(client_socket);
+        struct net_client* client = net_client_create(client_socket, NET_CLIENT_TYPE_UNKNOWN);
         if (NULL == client)
         {
             log_error("function call `net_client_create` failed");
@@ -594,7 +606,7 @@ void net_worker_handle_client_event(struct net_worker* worker, struct epoll_even
         {
             log_error("error happened with client socket");
         _e1:
-            net_worker_close_client(worker, client);
+            net_worker_close_client(worker, client, CLOSED_ERROR);
             break;
         }
 
@@ -701,7 +713,7 @@ void net_worker_destroy(struct net_worker* worker)
 
         net_worker_remove_client(worker, client);
 
-        net_worker_close_client(worker, client);
+        net_worker_close_client(worker, client, CLOSED_EXIT);
     }
 
     epoll_ctl(worker->epoll_handle, EPOLL_CTL_DEL, worker->listen_socket, NULL);
