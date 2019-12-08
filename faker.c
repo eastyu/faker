@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <signal.h>
+#include <pthread.h>
 #include <sys/epoll.h>
 #include <sys/types.h>
 #include <sys/time.h>
@@ -19,7 +20,7 @@
 #define CONFIG_CLIENT_DEFAULT_TIMEOUT       (1800 * 1000)
 #define CONFIG_LISTEN_BACKLOG               256
 #define CONFIG_LOG_LEVEL                    LOG_LEVEL_DEBUG
-#define CONFIG_RECV_BUFFER_SIZE             4096
+#define CONFIG_RECV_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
 
 #define EPOLL_EVENT_SIZE                    256
 
@@ -85,6 +86,7 @@ struct net_worker
     int listen_socket;
     int worker_status;
     int epoll_handle;
+    pthread_t worker_thread;
     struct linked_list __client_list;
 };
 
@@ -198,9 +200,9 @@ void linked_list_remove_item(struct linked_list* list, struct list_item* item)
     item->next = NULL;
 }
 
-struct net_buffer* net_buffer_create(int buf_size)
+struct net_buffer* net_buffer_create(int buffer_size)
 {
-    struct net_buffer* buffer = calloc(1, sizeof(struct net_buffer) + buf_size);
+    struct net_buffer* buffer = calloc(1, sizeof(struct net_buffer) + buffer_size);
     if (NULL == buffer)
     {
         log_error("system call `calloc` failed with error %d", errno);
@@ -209,9 +211,9 @@ struct net_buffer* net_buffer_create(int buf_size)
     }
 
     buffer->data_ptr = (char*)(buffer + 1);
-    buffer->data_size = buf_size;
+    buffer->data_size = buffer_size;
 
-    log_debug("buffer 0x%08X with size %d is created", buffer, buf_size);
+    log_debug("buffer 0x%08X with size %d is created", buffer, buffer_size);
 
     return buffer;
 }
@@ -347,10 +349,10 @@ int net_client_handle_data(struct net_client* client)
         struct net_buffer* buffer = net_client_get_receive_buffer(client);
         if (NULL == buffer)
         {
-            log_debug("%s", buffer->data_ptr);
-
             break;
         }
+
+        log_debug("%s", buffer->data_ptr);
 
         net_client_remove_receive_buffer(client, buffer);
 
@@ -494,6 +496,9 @@ void net_worker_add_client(struct net_worker* worker, struct net_client* client)
 
 void net_worker_close_client(struct net_worker* worker, struct net_client* client)
 {
+    log_debug("client 0x%08X with socket %d is being closed with status %d",
+        client, client->client_socket, client->client_status);
+    
     epoll_ctl(worker->epoll_handle, EPOLL_CTL_DEL, client->client_socket, NULL);
 
     close(client->client_socket);
@@ -744,12 +749,60 @@ int create_listen_socket_and_bind(const char* bind_addr, int listen_port)
 
 int main(int argc, char const *argv[])
 {
-    int listen_socket = create_listen_socket_and_bind("127.0.0.1", 9999);
+    int listen_socket = create_listen_socket_and_bind("0.0.0.0", 9999);
+    if (-1 == listen_socket)
+    {
+        log_error("function call `create_listen_socket_and_bind` failed");
+    _e1:
+        return -1;
+    }
 
     struct net_worker* worker = net_worker_create(listen_socket);
+    if (NULL == worker)
+    {
+        log_error("function call `net_worker_create` failed");
+    _e2:
+        close(listen_socket);
+        goto _e1;
+    }
 
+    sigset_t sigset = { { 0 } };
 
-    net_worker_thread_main(worker);
+    if (-1 == sigfillset(&sigset))
+    {
+        log_error("system call `sigfillset` failed with error %d", errno);
+
+        goto _e2;
+    }
+
+    int result = pthread_create(&worker->worker_thread, NULL, net_worker_thread_main, worker);
+
+    if (0 != result)
+    {
+        log_error("system call `pthread_create` failed with error %d", result);
+
+        net_worker_destroy(worker);
+        goto _e2;
+    }
+
+    while (1)
+    {
+        int signum = 0;
+        if (0 != sigwait(&sigset, &signum))
+        {
+            continue;
+        }
+
+        union sigval sig_data = { .sival_ptr = worker };
+        pthread_sigqueue(worker->worker_thread, signum, sig_data);
+
+        if (SIGINT == signum)
+        {
+            break;
+        }
+    }
+
+    pthread_join(worker->worker_thread, NULL);
 
     net_worker_destroy(worker);
 
