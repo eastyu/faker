@@ -19,7 +19,7 @@
 
 #define CONFIG_CLIENT_DEFAULT_TIMEOUT       (1800 * 1000)
 #define CONFIG_LISTEN_BACKLOG               256
-#define CONFIG_LOG_LEVEL                    LOG_LEVEL_ERROR
+#define CONFIG_LOG_LEVEL                    LOG_LEVEL_DEBUG
 #define CONFIG_RECV_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
 #define CONFIG_SEND_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
 
@@ -29,6 +29,9 @@
 
 #define NET_WORKER_STATUS_READY             0
 #define NET_WORKER_STATUS_EXIT              1
+
+#define NET_SERVER_STATUS_READY             0
+#define NET_SERVER_STATUS_EXIT              1
 
 #define NET_CLIENT_STATUS_CONNECTED         0
 
@@ -95,11 +98,20 @@ struct net_client
 
 struct net_worker
 {
-    int listen_socket;
     int worker_status;
     int epoll_handle;
     pthread_t worker_thread;
+    struct list_item __item;
     struct linked_list __client_list;
+};
+
+struct net_server
+{
+    int listen_socket;
+    int epoll_handle;
+    int server_status;
+    pthread_t server_thread;
+    struct linked_list __worker_list;
 };
 
 int write_log_to_file(int level, const char* file, int line, const char* format, ...)
@@ -237,6 +249,16 @@ void net_buffer_destroy(struct net_buffer* buffer)
     log_debug("buffer 0x%08X is destroyed", buffer);
 }
 
+int net_client_get_remaining_time(struct net_client* client)
+{
+    return client->expire_time - system_get_time();
+}
+
+void net_client_reset_expire_time(struct net_client* client)
+{
+    client->expire_time = system_get_time() + CONFIG_CLIENT_DEFAULT_TIMEOUT;
+}
+
 struct net_client* net_client_create(int client_socket, int client_type)
 {
     struct net_client* client = calloc(1, sizeof(struct net_client));
@@ -250,6 +272,8 @@ struct net_client* net_client_create(int client_socket, int client_type)
     client->client_socket = client_socket;
     client->client_type = client_type;
     client->client_status = NET_CLIENT_STATUS_CONNECTED;
+
+    net_client_reset_expire_time(client);
 
     log_debug("client 0x%08X with socket %d is created", client, client_socket);
 
@@ -284,16 +308,6 @@ void net_client_remove_receive_buffer(struct net_client* client, struct net_buff
 void net_client_add_receive_buffer(struct net_client* client, struct net_buffer* buffer)
 {
     linked_list_add_item(&client->__receive_list, &buffer->__item);
-}
-
-int net_client_get_remaining_time(struct net_client* client)
-{
-    return client->expire_time - system_get_time();
-}
-
-void net_client_reset_expire_time(struct net_client* client)
-{
-    client->expire_time = system_get_time() + CONFIG_CLIENT_DEFAULT_TIMEOUT;
 }
 
 int net_client_send_data(struct net_client* client, struct net_worker* worker)
@@ -505,45 +519,6 @@ void net_client_destroy(struct net_client* client)
     log_debug("client 0x%08X is destroyed", client);
 }
 
-struct net_worker* net_worker_create(int listen_socket)
-{
-    struct net_worker* worker = calloc(1, sizeof(struct net_worker));
-    if (NULL == worker)
-    {
-        log_error("system call `calloc` failed with error %d", errno);
-    _e1:
-        return NULL;
-    }
-
-    worker->epoll_handle = epoll_create(EPOLL_EVENT_SIZE);
-    if (-1 == worker->epoll_handle)
-    {
-        log_error("system call `epoll_create` failed with error %d", errno);
-    _e2:
-        free(worker);
-        goto _e1;
-    }
-
-    struct epoll_event event = { 0 };
-    event.data.fd = listen_socket;
-    event.events = EPOLLIN | EPOLLET;
-
-    if (-1 == epoll_ctl(worker->epoll_handle, EPOLL_CTL_ADD, listen_socket, &event))
-    {
-        log_error("system call `epoll_ctl` failed with error %d", errno);
-
-        close(worker->epoll_handle);
-        goto _e2;
-    }
-
-    worker->listen_socket = listen_socket;
-    worker->worker_status = NET_WORKER_STATUS_READY;
-
-    log_debug("worker 0x%08X is created", worker);
-
-    return worker;
-}
-
 struct net_client* net_worker_get_client(struct net_worker* worker)
 {
     return container_of(linked_list_get_item(&worker->__client_list), struct net_client, __item);
@@ -597,56 +572,6 @@ int net_worker_handle_client_timeout(struct net_worker* worker)
     return -1;
 }
 
-int net_worker_accept_new_client(struct net_worker* worker)
-{
-    while (1)
-    {
-        int client_socket = accept(worker->listen_socket, NULL, NULL);
-        if (-1 == client_socket)
-        {
-            break;
-        }
-
-        struct net_client* client = net_client_create(client_socket, NET_CLIENT_TYPE_UNKNOWN);
-        if (NULL == client)
-        {
-            log_error("function call `net_client_create` failed");
-        _e1:
-            close(client_socket);
-            continue;
-        }
-
-        struct epoll_event event = { 0 };
-        event.data.ptr = client;
-        event.events = EPOLLIN | EPOLLET;
-
-        if (-1 == epoll_ctl(worker->epoll_handle, EPOLL_CTL_ADD, client_socket, &event))
-        {
-            log_error("system call `epoll_ctl` failed with error %d", errno);
-        _e2:
-            net_client_destroy(client);
-            goto _e1;
-        }
-
-        client->registered_event = event.events;
-
-        if (-1 == set_socket_to_nonblock(client_socket))
-        {
-            log_error("function call `set_socket_to_nonblock` failed");
-
-            goto _e2;
-        }
-
-        net_client_reset_expire_time(client);
-
-        net_worker_add_client(worker, client);
-
-        log_debug("new client 0x%08X with socket %d is connected", client, client_socket);
-    }
-
-    return (EAGAIN == errno) ? 0 : -1;
-}
-
 void net_worker_handle_client_event(struct net_worker* worker, struct epoll_event* event)
 {
     do
@@ -696,26 +621,25 @@ void net_worker_signal_handler(int signal, siginfo_t* sig_info, void* context)
     if (SIGINT == signal)
     {
         worker->worker_status = NET_WORKER_STATUS_EXIT;
+
+        log_debug("worker 0x%08X received SIGINT", worker);
     }
 }
 
-void* net_worker_thread_main(void* args)
+int signal_init(int* signums, int signal_size, void (*signal_handler)(int, siginfo_t*, void*))
 {
-    struct net_worker* worker = (struct net_worker*)args;
-
     struct sigaction action = { { 0 } };
     if (-1 == sigfillset(&action.sa_mask))
     {
         log_error("system call `sigfillset` failed with error %d", errno);
     _e1:
-        return NULL;
+        return -1;
     }
     
-    action.sa_sigaction = net_worker_signal_handler;
+    action.sa_sigaction = signal_handler;
     action.sa_flags = SA_SIGINFO | SA_RESTART;
 
-    int signums[] = { SIGINT, SIGUSR1, SIGUSR2 };
-    for (int i = 0; i < sizeof(signums) / sizeof(int); i++)
+    for (int i = 0; i < signal_size; i++)
     {
         if (-1 == sigaction(signums[i], &action, NULL))
         {
@@ -724,6 +648,21 @@ void* net_worker_thread_main(void* args)
             goto _e1;
         }
     }
+
+    return 0;
+}
+
+void* net_worker_thread_main(void* args)
+{
+    int signums[] = { SIGINT, SIGUSR1, SIGUSR2 };
+    if (-1 == signal_init(signums, sizeof(signums) / sizeof(int), net_worker_signal_handler))
+    {
+        log_error("function call `signal_init` failed");
+
+        return NULL;
+    }
+
+    struct net_worker* worker = (struct net_worker*)args;
 
     while (1)
     {
@@ -739,12 +678,6 @@ void* net_worker_thread_main(void* args)
 
         for (int i = 0; i < event_count; i ++)
         {
-            if (events[i].data.fd == worker->listen_socket)
-            {
-                net_worker_accept_new_client(worker);
-                continue;
-            }
-
             net_worker_handle_client_event(worker, &events[i]);
         }
     }
@@ -754,8 +687,50 @@ void* net_worker_thread_main(void* args)
     return NULL;
 }
 
+struct net_worker* net_worker_create()
+{
+    struct net_worker* worker = calloc(1, sizeof(struct net_worker));
+    if (NULL == worker)
+    {
+        log_error("system call `calloc` failed with error %d", errno);
+    _e1:
+        return NULL;
+    }
+
+    worker->epoll_handle = epoll_create(EPOLL_EVENT_SIZE);
+    if (-1 == worker->epoll_handle)
+    {
+        log_error("system call `epoll_create` failed with error %d", errno);
+    _e2:
+        free(worker);
+        goto _e1;
+    }
+
+    worker->worker_status = NET_WORKER_STATUS_READY;
+
+    int result = pthread_create(&worker->worker_thread, NULL, net_worker_thread_main, worker);
+    if (0 != result)
+    {
+        log_error("system call `pthread_create` failed with error %d", result);
+
+        close(worker->epoll_handle);
+        goto _e2;
+    }
+
+    log_debug("worker 0x%08X is created", worker);
+
+    return worker;
+}
+
 void net_worker_destroy(struct net_worker* worker)
 {
+    log_debug("--> enter %s", __FUNCTION__);
+    
+    union sigval sig_data = { .sival_ptr = worker };
+    pthread_sigqueue(worker->worker_thread, SIGINT, sig_data);
+
+    pthread_join(worker->worker_thread, NULL);
+
     while (1)
     {
         struct net_client* client = net_worker_get_client(worker);
@@ -768,8 +743,6 @@ void net_worker_destroy(struct net_worker* worker)
 
         net_worker_close_client(worker, client, CLOSED_EXIT);
     }
-
-    epoll_ctl(worker->epoll_handle, EPOLL_CTL_DEL, worker->listen_socket, NULL);
 
     close(worker->epoll_handle);
 
@@ -812,42 +785,279 @@ int create_listen_socket_and_bind(const char* bind_addr, int listen_port)
     return listen_socket;
 }
 
-int main(int argc, char const *argv[])
+struct net_worker* net_server_get_worker(struct net_server* server)
 {
-    int listen_socket = create_listen_socket_and_bind("0.0.0.0", 9999);
-    if (-1 == listen_socket)
+    return container_of(linked_list_get_item(&server->__worker_list), struct net_worker, __item);
+}
+
+void net_server_add_worker(struct net_server* server, struct net_worker* worker)
+{
+    linked_list_add_item(&server->__worker_list, &worker->__item);
+}
+
+void net_server_remove_worker(struct net_server* server, struct net_worker* worker)
+{
+    linked_list_remove_item(&server->__worker_list, &worker->__item);
+}
+
+int net_server_register_client(struct net_server* server, struct net_client* client)
+{
+    struct net_worker* worker = net_server_get_worker(server);
+    if (NULL == worker)
     {
-        log_error("function call `create_listen_socket_and_bind` failed");
+        log_error("no worker in the list");
     _e1:
         return -1;
     }
 
-    struct net_worker* worker = net_worker_create(listen_socket);
-    if (NULL == worker)
+    net_server_remove_worker(server, worker);
+
+    struct epoll_event event = { 0 };
+    event.data.ptr = client;
+    event.events = EPOLLIN | EPOLLET;
+
+    if (-1 == epoll_ctl(worker->epoll_handle, EPOLL_CTL_ADD, client->client_socket, &event))
     {
-        log_error("function call `net_worker_create` failed");
-    _e2:
-        close(listen_socket);
+        log_error("system call `epoll_ctl` failed with error %d", errno);
+
+        net_server_add_worker(server, worker);
         goto _e1;
+    }
+
+    client->registered_event = event.events;
+
+    net_worker_add_client(worker, client);
+
+    net_server_add_worker(server, worker);
+
+    return 0;
+}
+
+int net_server_accept_new_client(struct net_server* server)
+{
+    while (1)
+    {
+        int client_socket = accept(server->listen_socket, NULL, NULL);
+        if (-1 == client_socket)
+        {
+            break;
+        }
+
+        if (-1 == set_socket_to_nonblock(client_socket))
+        {
+            log_error("function call `set_socket_to_nonblock` failed");
+        _e1:
+            close(client_socket);
+            continue;
+        }
+
+        struct net_client* client = net_client_create(client_socket, NET_CLIENT_TYPE_UNKNOWN);
+        if (NULL == client)
+        {
+            log_error("function call `net_client_create` failed");
+            
+            goto _e1;
+        }
+
+        if (-1 == net_server_register_client(server, client))
+        {
+            net_client_destroy(client);
+            goto _e1;
+        }
+        
+        log_debug("new client 0x%08X with socket %d is connected", client, client_socket);
+    }
+
+    return (EAGAIN == errno) ? 0 : -1;
+}
+
+void net_server_signal_handler(int signal, siginfo_t* sig_info, void* context)
+{
+    struct net_server* server = (struct net_server*)sig_info->si_value.sival_ptr;
+    if (SIGINT == signal)
+    {
+        server->server_status = NET_SERVER_STATUS_EXIT;
+
+        log_debug("server 0x%08X received SIGINT", server);
+    }
+}
+
+void* net_server_thread_main(void* args)
+{
+    int signums[] = { SIGINT, SIGUSR1, SIGUSR2 };
+    if (-1 == signal_init(signums, sizeof(signums) / sizeof(int), net_server_signal_handler))
+    {
+        log_error("function call `signal_init` failed");
+
+        return NULL;
+    }
+
+    struct net_server* server = (struct net_server*)args;
+
+    while (1)
+    {
+        if (NET_SERVER_STATUS_READY != server->server_status)
+        {
+            break;
+        }
+
+        struct epoll_event events[EPOLL_EVENT_SIZE] = { { 0 } };
+
+        int event_count = epoll_wait(server->epoll_handle, events, EPOLL_EVENT_SIZE, -1);
+
+        for (int i = 0; i < event_count; i ++)
+        {
+            if (events[i].data.fd == server->listen_socket)
+            {
+                net_server_accept_new_client(server);
+            }
+        }
+    }
+
+    log_debug("server 0x%08X is exited with status %d", server, server->server_status);
+
+    return NULL;
+}
+
+struct net_server* net_server_create(const char* bind_addr, int listen_port, int worker_size)
+{
+    struct net_server* server = calloc(1, sizeof(struct net_server));
+    if (NULL == server)
+    {
+        log_error("system call `calloc` failed with error %d", errno);
+    _e1:
+        return NULL;
+    }
+
+    int listen_socket = create_listen_socket_and_bind(bind_addr, listen_port);
+    if (-1 == listen_socket)
+    {
+        log_error("function call `create_listen_socket_and_bind` failed");
+    _e2:
+        free(server);
+        goto _e1;
+    }
+
+    server->epoll_handle = epoll_create(EPOLL_EVENT_SIZE);
+    if (-1 == server->epoll_handle)
+    {
+        log_error("system call `epoll_create` failed with error %d", errno);
+    _e3:
+        close(listen_socket);
+        goto _e2;
+    }
+
+    struct epoll_event event = { 0 };
+    event.data.fd = listen_socket;
+    event.events = EPOLLET | EPOLLIN;
+
+    if (-1 == epoll_ctl(server->epoll_handle, EPOLL_CTL_ADD, listen_socket, &event))
+    {
+        log_error("system call `epoll_Ctl` failed with error %d", errno);
+
+        close(server->epoll_handle);
+        goto _e3;
+    }
+
+    log_debug("server 0x%08X is created with socket %d", server, listen_socket);
+
+    return server;
+}
+
+void net_server_destroy_workers(struct net_server* server)
+{
+    while (1)
+    {
+        struct net_worker* worker = net_server_get_worker(server);
+        if (NULL == worker)
+        {
+            break;
+        }
+
+        net_server_remove_worker(server, worker);
+
+        net_worker_destroy(worker);
+    }
+}
+
+int net_server_create_workers(struct net_server* server, int worker_size)
+{
+    for (int i = 0; i < worker_size; i++)
+    {
+        struct net_worker* worker = net_worker_create();
+        if (NULL == worker)
+        {
+            continue;
+        }
+
+        net_server_add_worker(server, worker);
+    }
+
+    return 0;
+}
+
+void net_server_destroy(struct net_server* server)
+{
+    union sigval sig_data = { .sival_ptr = server };
+    pthread_sigqueue(server->server_thread, SIGINT, sig_data);
+
+    pthread_join(server->server_thread, NULL);
+
+    net_server_destroy_workers(server);
+
+    epoll_ctl(server->epoll_handle, EPOLL_CTL_DEL, server->listen_socket, NULL);
+
+    close(server->epoll_handle);
+
+    free(server);
+
+    log_debug("server 0x%08X is destroyed", server);
+}
+
+int net_server_run_event_loop(struct net_server* server, int worker_size)
+{
+    if (-1 == net_server_create_workers(server, worker_size))
+    {
+        log_error("function call `net_server_create_workers` failed");
+    _e1:
+        return -1;
+    }
+
+    server->server_status = NET_SERVER_STATUS_READY;
+
+    int result = pthread_create(&server->server_thread, NULL, net_server_thread_main, server);
+    if (0 != result)
+    {
+        log_error("system call `pthread_create` failed with error %d", result);
+
+        net_server_destroy_workers(server);
+        goto _e1;
+    }
+
+    return 0;
+}
+
+int main(int argc, char const *argv[])
+{
+    struct net_server* server = net_server_create("0.0.0.0", 9999, 2);
+    if (NULL == server)
+    {
+    _e1:
+        return -1;
     }
 
     sigset_t sigset = { { 0 } };
 
     if (-1 == sigfillset(&sigset))
     {
-        log_error("system call `sigfillset` failed with error %d", errno);
-    _e3:
-        net_worker_destroy(worker);
-        goto _e2;
+    _e2:
+        net_server_destroy(server);
+        goto _e1;
     }
 
-    int result = pthread_create(&worker->worker_thread, NULL, net_worker_thread_main, worker);
-
-    if (0 != result)
+    if (-1 == net_server_run_event_loop(server, 1))
     {
-        log_error("system call `pthread_create` failed with error %d", result);
-
-        goto _e3;
+        goto _e2;
     }
 
     while (1)
@@ -858,20 +1068,15 @@ int main(int argc, char const *argv[])
             continue;
         }
 
-        union sigval sig_data = { .sival_ptr = worker };
-        pthread_sigqueue(worker->worker_thread, signum, sig_data);
-
         if (SIGINT == signum)
         {
+            log_debug("main thread received SIGINT");
+
             break;
         }
     }
 
-    pthread_join(worker->worker_thread, NULL);
-
-    net_worker_destroy(worker);
-
-    close(listen_socket);
+    net_server_destroy(server);
 
     return 0;
 }
