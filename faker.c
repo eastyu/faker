@@ -144,9 +144,9 @@ int write_log_to_file(int level, const char* file, int line, const char* format,
     char const* prefix[] = { "DEBUG", "INFO", "WARN", "ERROR" };
 
     int length = sprintf(buffer, "%04d-%02d-%02d %02d:%02d:%02d.%04ld [%s] file=%s "
-        "line=%d thread=0x%08lX ", local_tm.tm_year + 1900, local_tm.tm_mon + 1,
+        "line=%d thread=%p ", local_tm.tm_year + 1900, local_tm.tm_mon + 1,
         local_tm.tm_mday, local_tm.tm_hour, local_tm.tm_min, local_tm.tm_sec,
-        tv.tv_usec / 1000, prefix[level % 4], file, line, pthread_self());
+        tv.tv_usec / 1000, prefix[level % 4], file, line, (void*)pthread_self());
 
     va_list ap; va_start(ap, format); vsprintf(buffer + length, format, ap); va_end(ap);
 
@@ -256,7 +256,7 @@ struct net_buffer* net_buffer_create(int buffer_size)
     buffer->data_ptr = (char*)(buffer + 1);
     buffer->data_size = buffer_size;
 
-    log_debug("buffer 0x%08X with size %d is created", buffer, buffer_size);
+    log_debug("buffer %p with size %d is created", buffer, buffer_size);
 
     return buffer;
 }
@@ -265,7 +265,7 @@ void net_buffer_destroy(struct net_buffer* buffer)
 {
     free(buffer);
 
-    log_debug("buffer 0x%08X is destroyed", buffer);
+    log_debug("buffer %p is destroyed", buffer);
 }
 
 int net_client_get_remaining_time(struct net_client* client)
@@ -294,7 +294,7 @@ struct net_client* net_client_create(int client_socket, int client_type)
 
     net_client_reset_expire_time(client);
 
-    log_debug("client 0x%08X with socket %d is created", client, client_socket);
+    log_debug("client %p with socket %d is created", client, client_socket);
 
     return client;
 }
@@ -535,7 +535,7 @@ void net_client_destroy(struct net_client* client)
 
     free(client);
 
-    log_debug("client 0x%08X is destroyed", client);
+    log_debug("client %p is destroyed", client);
 }
 
 struct net_client* net_worker_get_client(struct net_worker* worker)
@@ -560,7 +560,7 @@ int net_worker_get_client_size(struct net_worker* worker)
 
 void net_worker_close_client(struct net_worker* worker, struct net_client* client, int reason)
 {
-    log_debug("client 0x%08X with socket %d is being closed with status %d",
+    log_debug("client %p with socket %d is being closed with status %d",
         client, client->client_socket, client->client_status);
 
     epoll_ctl(worker->epoll_handle, EPOLL_CTL_DEL, client->client_socket, NULL);
@@ -590,7 +590,17 @@ int net_worker_handle_client_timeout(struct net_worker* worker)
 
         net_worker_remove_client(worker, client);
 
-        net_worker_close_client(worker, client, CLOSED_TIMEOUT);
+        if (NET_CLIENT_TYPE_CHANNEL_1 == client->client_type ||
+            NET_CLIENT_TYPE_CHANNEL_2 == client->client_type)
+        {
+            net_client_reset_expire_time(client);
+
+            net_worker_add_client(worker, client);
+        }
+        else
+        {
+            net_worker_close_client(worker, client, CLOSED_TIMEOUT);
+        }
     }
 
     return -1;
@@ -647,7 +657,7 @@ void signal_handler(int signal, siginfo_t* sig_info, void* context)
         
         server->server_status = NET_SERVER_STATUS_EXIT;
 
-        log_debug("server 0x%08X received SIGUSR1", server);
+        log_debug("server %p received SIGUSR1", server);
     }
 
     if (SIGUSR2 == signal)
@@ -656,7 +666,7 @@ void signal_handler(int signal, siginfo_t* sig_info, void* context)
         
         worker->worker_status = NET_WORKER_STATUS_EXIT;
 
-        log_debug("worker 0x%08X received SIGUSR2", worker);
+        log_debug("worker %p received SIGUSR2", worker);
     }
 }
 
@@ -708,7 +718,7 @@ void* net_worker_thread_main(void* args)
         }
     }
 
-    log_debug("worker 0x%08X is exited with status %d", worker, worker->worker_status);
+    log_debug("worker %p is exited with status %d", worker, worker->worker_status);
 
     return NULL;
 }
@@ -743,7 +753,7 @@ struct net_worker* net_worker_create()
         goto _e2;
     }
 
-    log_debug("worker 0x%08X is created", worker);
+    log_debug("worker %p is created", worker);
 
     return worker;
 }
@@ -775,7 +785,7 @@ void net_worker_destroy(struct net_worker* worker)
 
     free(worker);
 
-    log_debug("worker 0x%08X is destroyed", worker);
+    log_debug("worker %p is destroyed", worker);
 }
 
 int create_listen_socket_and_bind(const char* bind_addr, int listen_port)
@@ -897,7 +907,7 @@ int net_server_accept_new_client(struct net_server* server)
             goto _e1;
         }
         
-        log_debug("new client 0x%08X with socket %d is connected", client, client_socket);
+        log_debug("new client %p with socket %d is connected", client, client_socket);
     }
 
     return (EAGAIN == errno) ? 0 : -1;
@@ -927,7 +937,7 @@ void* net_server_thread_main(void* args)
         }
     }
 
-    log_debug("server 0x%08X is exited with status %d", server, server->server_status);
+    log_debug("server %p is exited with status %d", server, server->server_status);
 
     return NULL;
 }
@@ -966,7 +976,7 @@ struct net_server* net_server_create(int listen_socket)
     server->server_status = NET_SERVER_STATUS_READY;
     server->listen_socket = listen_socket;
 
-    log_debug("server 0x%08X is created with socket %d", server, listen_socket);
+    log_debug("server %p is created with socket %d", server, listen_socket);
 
     return server;
 }
@@ -1000,7 +1010,7 @@ void net_server_destroy(struct net_server* server)
 
     free(server);
 
-    log_debug("server 0x%08X is destroyed", server);
+    log_debug("server %p is destroyed", server);
 }
 
 int net_server_run_event_loop(struct net_server* server, int worker_size)
