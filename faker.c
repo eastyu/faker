@@ -615,18 +615,28 @@ void net_worker_handle_client_event(struct net_worker* worker, struct epoll_even
     } while (0);
 }
 
-void net_worker_signal_handler(int signal, siginfo_t* sig_info, void* context)
+void signal_handler(int signal, siginfo_t* sig_info, void* context)
 {
-    struct net_worker* worker = (struct net_worker*)sig_info->si_value.sival_ptr;
-    if (SIGINT == signal)
+    if (SIGUSR1 == signal)
     {
+        struct net_server* server = (struct net_server*)sig_info->si_value.sival_ptr;
+        
+        server->server_status = NET_SERVER_STATUS_EXIT;
+
+        log_debug("server 0x%08X received SIGUSR1", server);
+    }
+
+    if (SIGUSR2 == signal)
+    {
+        struct net_worker* worker = (struct net_worker*)sig_info->si_value.sival_ptr;
+        
         worker->worker_status = NET_WORKER_STATUS_EXIT;
 
-        log_debug("worker 0x%08X received SIGINT", worker);
+        log_debug("worker 0x%08X received SIGUSR2", worker);
     }
 }
 
-int signal_init(int* signums, int signal_size, void (*signal_handler)(int, siginfo_t*, void*))
+int signal_init(int* signums, int signal_size)
 {
     struct sigaction action = { { 0 } };
     if (-1 == sigfillset(&action.sa_mask))
@@ -654,14 +664,6 @@ int signal_init(int* signums, int signal_size, void (*signal_handler)(int, sigin
 
 void* net_worker_thread_main(void* args)
 {
-    int signums[] = { SIGINT, SIGUSR1, SIGUSR2 };
-    if (-1 == signal_init(signums, sizeof(signums) / sizeof(int), net_worker_signal_handler))
-    {
-        log_error("function call `signal_init` failed");
-
-        return NULL;
-    }
-
     struct net_worker* worker = (struct net_worker*)args;
 
     while (1)
@@ -724,10 +726,8 @@ struct net_worker* net_worker_create()
 
 void net_worker_destroy(struct net_worker* worker)
 {
-    log_debug("--> enter %s", __FUNCTION__);
-    
     union sigval sig_data = { .sival_ptr = worker };
-    pthread_sigqueue(worker->worker_thread, SIGINT, sig_data);
+    pthread_sigqueue(worker->worker_thread, SIGUSR2, sig_data);
 
     pthread_join(worker->worker_thread, NULL);
 
@@ -871,27 +871,8 @@ int net_server_accept_new_client(struct net_server* server)
     return (EAGAIN == errno) ? 0 : -1;
 }
 
-void net_server_signal_handler(int signal, siginfo_t* sig_info, void* context)
-{
-    struct net_server* server = (struct net_server*)sig_info->si_value.sival_ptr;
-    if (SIGINT == signal)
-    {
-        server->server_status = NET_SERVER_STATUS_EXIT;
-
-        log_debug("server 0x%08X received SIGINT", server);
-    }
-}
-
 void* net_server_thread_main(void* args)
 {
-    int signums[] = { SIGINT, SIGUSR1, SIGUSR2 };
-    if (-1 == signal_init(signums, sizeof(signums) / sizeof(int), net_server_signal_handler))
-    {
-        log_error("function call `signal_init` failed");
-
-        return NULL;
-    }
-
     struct net_server* server = (struct net_server*)args;
 
     while (1)
@@ -919,7 +900,7 @@ void* net_server_thread_main(void* args)
     return NULL;
 }
 
-struct net_server* net_server_create(const char* bind_addr, int listen_port, int worker_size)
+struct net_server* net_server_create(const char* bind_addr, int listen_port)
 {
     struct net_server* server = calloc(1, sizeof(struct net_server));
     if (NULL == server)
@@ -999,8 +980,8 @@ int net_server_create_workers(struct net_server* server, int worker_size)
 void net_server_destroy(struct net_server* server)
 {
     union sigval sig_data = { .sival_ptr = server };
-    pthread_sigqueue(server->server_thread, SIGINT, sig_data);
-
+    pthread_sigqueue(server->server_thread, SIGUSR1, sig_data);
+    
     pthread_join(server->server_thread, NULL);
 
     net_server_destroy_workers(server);
@@ -1039,24 +1020,36 @@ int net_server_run_event_loop(struct net_server* server, int worker_size)
 
 int main(int argc, char const *argv[])
 {
-    struct net_server* server = net_server_create("0.0.0.0", 9999, 2);
-    if (NULL == server)
+    int signums[] = { SIGUSR1, SIGUSR2 };
+    if (-1 == signal_init(signums, sizeof(signums) / sizeof(int)))
     {
+        log_error("function call `signal_init` failed");
     _e1:
         return -1;
+    }
+
+    struct net_server* server = net_server_create("0.0.0.0", 9999);
+    if (NULL == server)
+    {
+        log_error("function call `net_server_create` failed");
+
+        goto _e1;
     }
 
     sigset_t sigset = { { 0 } };
 
     if (-1 == sigfillset(&sigset))
     {
+        log_error("system call `sigfillset` failed with error %d", errno);
     _e2:
         net_server_destroy(server);
         goto _e1;
     }
 
-    if (-1 == net_server_run_event_loop(server, 1))
+    if (-1 == net_server_run_event_loop(server, 2))
     {
+        log_error("function call `net_server_run_event_loop` failed");
+
         goto _e2;
     }
 
