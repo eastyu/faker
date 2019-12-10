@@ -67,6 +67,12 @@
 #define log_error(format, ...)              \
     write_log_to_file(LOG_LEVEL_ERROR, __FILE__, __LINE__, format, ##__VA_ARGS__)
 
+#define log_function_entry()                \
+    log_debug("----> %s", __FUNCTION__)
+
+#define log_function_leave()                \
+    log_debug("<---- %s", __FUNCTION__)
+
 struct list_item
 {
     struct list_item* next;
@@ -137,11 +143,12 @@ int write_log_to_file(int level, const char* file, int line, const char* format,
 
     char const* prefix[] = { "DEBUG", "INFO", "WARN", "ERROR" };
 
-    int length = sprintf(buffer, "%04d-%02d-%02d %02d:%02d:%02d.%04ld [%s] file=%s line=%d ",
-        local_tm.tm_year + 1900, local_tm.tm_mon + 1, local_tm.tm_mday, local_tm.tm_hour,
-        local_tm.tm_min, local_tm.tm_sec, tv.tv_usec / 1000, prefix[level % 4], file, line);
+    int length = sprintf(buffer, "%04d-%02d-%02d %02d:%02d:%02d.%04ld [%s] file=%s "
+        "line=%d thread=0x%08lX ", local_tm.tm_year + 1900, local_tm.tm_mon + 1,
+        local_tm.tm_mday, local_tm.tm_hour, local_tm.tm_min, local_tm.tm_sec,
+        tv.tv_usec / 1000, prefix[level % 4], file, line, pthread_self());
 
-    va_list args; va_start(args, format); vsprintf(buffer + length, format, args); va_end(args);
+    va_list ap; va_start(ap, format); vsprintf(buffer + length, format, ap); va_end(ap);
 
     return (fprintf(stderr, "%s\n", buffer) > 0) ? 0 : -1;
 }
