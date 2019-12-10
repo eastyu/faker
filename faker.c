@@ -203,7 +203,7 @@ void linked_list_add_item(struct linked_list* list, struct list_item* item)
     }
 
     list->tail = item;
-    
+
     list->list_size ++;
 }
 
@@ -1097,6 +1097,15 @@ int main(int argc, char const *argv[])
             log_debug("main thread received SIGINT");
 
             break;
+        }
+        else
+        {
+            union sigval sig_data = { .sival_ptr = server };
+            int result = pthread_sigqueue(server->server_thread, signum, sig_data);
+            if (0 != result)
+            {
+                log_error("system call `pthread_sigqueue` failed with error %d", result);
+            }
         }
     }
 
