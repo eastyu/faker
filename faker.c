@@ -184,6 +184,87 @@ int set_socket_to_nonblock(int socket)
     return 0;
 }
 
+void signal_handler(int signal, siginfo_t* sig_info, void* context)
+{
+    if (SIGUSR1 == signal)
+    {
+        struct net_server* server = (struct net_server*)sig_info->si_value.sival_ptr;
+        
+        server->server_status = NET_SERVER_STATUS_EXIT;
+
+        log_debug("server %p received SIGUSR1", server);
+    }
+
+    if (SIGUSR2 == signal)
+    {
+        struct net_worker* worker = (struct net_worker*)sig_info->si_value.sival_ptr;
+        
+        worker->worker_status = NET_WORKER_STATUS_EXIT;
+
+        log_debug("worker %p received SIGUSR2", worker);
+    }
+}
+
+int signal_init(int* signums, int signal_size)
+{
+    struct sigaction action = { { 0 } };
+    if (-1 == sigfillset(&action.sa_mask))
+    {
+        log_error("system call `sigfillset` failed with error %d", errno);
+    _e1:
+        return -1;
+    }
+    
+    action.sa_sigaction = signal_handler;
+    action.sa_flags = SA_SIGINFO | SA_RESTART;
+
+    for (int i = 0; i < signal_size; i++)
+    {
+        if (-1 == sigaction(signums[i], &action, NULL))
+        {
+            log_error("system call `sigaction` failed with error %d", errno);
+
+            goto _e1;
+        }
+    }
+
+    return 0;
+}
+
+int create_listen_socket_and_bind(const char* bind_addr, int listen_port)
+{
+    int listen_socket = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    if (-1 == listen_socket)
+    {
+        log_error("system call `socket` failed with error %d", errno);
+    _e1:
+        return -1;
+    }
+
+    struct sockaddr_in addr_in = { 0 };
+    addr_in.sin_addr.s_addr = inet_addr(bind_addr);
+    addr_in.sin_family = AF_INET;
+    addr_in.sin_port = htons(listen_port);
+
+    if (-1 == bind(listen_socket, (struct sockaddr*)&addr_in, sizeof(struct sockaddr_in)))
+    {
+        log_error("system call `bind` failed with error %d", errno);
+    _e2:
+        close(listen_socket);
+        goto _e1;
+    }
+
+    if (-1 == listen(listen_socket, CONFIG_LISTEN_BACKLOG))
+    {
+        log_error("system call `listen` failed with error %d", errno);
+        goto _e2;
+    }
+
+    log_debug("socket %d is listen at %s:%d", listen_socket, bind_addr, listen_port);
+
+    return listen_socket;
+}
+
 struct list_item* linked_list_get_item(struct linked_list* list)
 {
     return list->head;
@@ -649,53 +730,6 @@ void net_worker_handle_client_event(struct net_worker* worker, struct epoll_even
     } while (0);
 }
 
-void signal_handler(int signal, siginfo_t* sig_info, void* context)
-{
-    if (SIGUSR1 == signal)
-    {
-        struct net_server* server = (struct net_server*)sig_info->si_value.sival_ptr;
-        
-        server->server_status = NET_SERVER_STATUS_EXIT;
-
-        log_debug("server %p received SIGUSR1", server);
-    }
-
-    if (SIGUSR2 == signal)
-    {
-        struct net_worker* worker = (struct net_worker*)sig_info->si_value.sival_ptr;
-        
-        worker->worker_status = NET_WORKER_STATUS_EXIT;
-
-        log_debug("worker %p received SIGUSR2", worker);
-    }
-}
-
-int signal_init(int* signums, int signal_size)
-{
-    struct sigaction action = { { 0 } };
-    if (-1 == sigfillset(&action.sa_mask))
-    {
-        log_error("system call `sigfillset` failed with error %d", errno);
-    _e1:
-        return -1;
-    }
-    
-    action.sa_sigaction = signal_handler;
-    action.sa_flags = SA_SIGINFO | SA_RESTART;
-
-    for (int i = 0; i < signal_size; i++)
-    {
-        if (-1 == sigaction(signums[i], &action, NULL))
-        {
-            log_error("system call `sigaction` failed with error %d", errno);
-
-            goto _e1;
-        }
-    }
-
-    return 0;
-}
-
 void* net_worker_thread_main(void* args)
 {
     struct net_worker* worker = (struct net_worker*)args;
@@ -718,7 +752,7 @@ void* net_worker_thread_main(void* args)
         }
     }
 
-    log_debug("worker %p is exited with status %d", worker, worker->worker_status);
+    log_debug("worker %p exited with status %d", worker, worker->worker_status);
 
     return NULL;
 }
@@ -788,40 +822,6 @@ void net_worker_destroy(struct net_worker* worker)
     log_debug("worker %p is destroyed", worker);
 }
 
-int create_listen_socket_and_bind(const char* bind_addr, int listen_port)
-{
-    int listen_socket = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-    if (-1 == listen_socket)
-    {
-        log_error("system call `socket` failed with error %d", errno);
-    _e1:
-        return -1;
-    }
-
-    struct sockaddr_in addr_in = { 0 };
-    addr_in.sin_addr.s_addr = inet_addr(bind_addr);
-    addr_in.sin_family = AF_INET;
-    addr_in.sin_port = htons(listen_port);
-
-    if (-1 == bind(listen_socket, (struct sockaddr*)&addr_in, sizeof(struct sockaddr_in)))
-    {
-        log_error("system call `bind` failed with error %d", errno);
-    _e2:
-        close(listen_socket);
-        goto _e1;
-    }
-
-    if (-1 == listen(listen_socket, CONFIG_LISTEN_BACKLOG))
-    {
-        log_error("system call `listen` failed with error %d", errno);
-        goto _e2;
-    }
-
-    log_debug("socket %d is listen at %s:%d", listen_socket, bind_addr, listen_port);
-
-    return listen_socket;
-}
-
 struct net_worker* net_server_get_worker(struct net_server* server)
 {
     return container_of(linked_list_get_item(&server->__worker_list), struct net_worker, __item);
@@ -882,6 +882,13 @@ int net_server_accept_new_client(struct net_server* server)
         int client_socket = accept(server->listen_socket, NULL, NULL);
         if (-1 == client_socket)
         {
+            if (EAGAIN != errno)
+            {
+                log_error("system call `accept` failed with error %d", errno);
+
+                return -1;
+            }
+
             break;
         }
 
@@ -903,6 +910,8 @@ int net_server_accept_new_client(struct net_server* server)
 
         if (-1 == net_server_register_client(server, client))
         {
+            log_error("function call `net_server_register_client` failed");
+
             net_client_destroy(client);
             goto _e1;
         }
@@ -910,7 +919,7 @@ int net_server_accept_new_client(struct net_server* server)
         log_debug("new client %p with socket %d is connected", client, client_socket);
     }
 
-    return (EAGAIN == errno) ? 0 : -1;
+    return 0;
 }
 
 void* net_server_thread_main(void* args)
@@ -937,7 +946,7 @@ void* net_server_thread_main(void* args)
         }
     }
 
-    log_debug("server %p is exited with status %d", server, server->server_status);
+    log_debug("server %p exited with status %d", server, server->server_status);
 
     return NULL;
 }
@@ -1020,6 +1029,8 @@ int net_server_run_event_loop(struct net_server* server, int worker_size)
         struct net_worker* worker = net_worker_create();
         if (NULL == worker)
         {
+            log_error("function call `net_worker_create` failed");
+
             continue;
         }
 
