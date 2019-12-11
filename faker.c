@@ -572,13 +572,13 @@ int net_client_receive_data(struct net_client* client, struct net_worker* worker
         buffer->data_size = length;
 
         net_client_add_receive_buffer(client, buffer);
-    }
 
-    if (-1 == net_client_handle_data(client, worker))
-    {
-        log_error("function call `net_client_handle_data` failed");
+        if (-1 == net_client_handle_data(client, worker))
+        {
+            log_error("function call `net_client_handle_data` failed");
 
-        goto _e1;
+            goto _e1;
+        }
     }
 
     return 0;
