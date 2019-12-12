@@ -83,6 +83,8 @@ struct list_item
 struct linked_list
 {
     int list_size;
+    int thread_safe;
+    pthread_spinlock_t lock;
     struct list_item* head;
     struct list_item* tail;
 };
@@ -266,18 +268,72 @@ int create_listen_socket_and_bind(const char* bind_addr, int listen_port)
     return listen_socket;
 }
 
+int linked_list_initialize(struct linked_list* list)
+{
+    if (0 != pthread_spin_init(&list->lock, PTHREAD_PROCESS_PRIVATE))
+    {
+        return -1;
+    }
+
+    list->thread_safe = 1;
+
+    return 0;
+}
+
+int linked_list_uninitialize(struct linked_list* list)
+{
+    if (0 != pthread_spin_destroy(&list->lock))
+    {
+        return -1;
+    }
+
+    list->thread_safe = 0;
+
+    return 0;
+}
+
+void linked_list_lock(struct linked_list* list)
+{
+    if (list->thread_safe)
+    {
+        pthread_spin_lock(&list->lock);
+    }
+}
+
+void linked_list_unlock(struct linked_list* list)
+{
+    if (1 == list->thread_safe)
+    {
+        pthread_spin_unlock(&list->lock);
+    }
+}
+
 struct list_item* linked_list_get_item(struct linked_list* list)
 {
-    return list->head;
+    linked_list_lock(list);
+
+    struct list_item* item = list->head;
+
+    linked_list_unlock(list);
+
+    return item;
 }
 
 int linked_list_get_size(struct linked_list* list)
 {
-    return list->list_size;
+    linked_list_lock(list);
+
+    int size = list->list_size;
+
+    linked_list_unlock(list);
+
+    return size;
 }
 
 void linked_list_add_item(struct linked_list* list, struct list_item* item)
 {
+    linked_list_lock(list);
+
     item->prev = list->tail;
     item->next = NULL;
 
@@ -294,10 +350,14 @@ void linked_list_add_item(struct linked_list* list, struct list_item* item)
     list->tail = item;
 
     list->list_size ++;
+
+    linked_list_unlock(list);
 }
 
 void linked_list_remove_item(struct linked_list* list, struct list_item* item)
 {
+    linked_list_lock(list);
+
     struct list_item* prev = item->prev;
     struct list_item* next = item->next;
 
@@ -323,6 +383,8 @@ void linked_list_remove_item(struct linked_list* list, struct list_item* item)
     item->next = NULL;
 
     list->list_size --;
+
+    linked_list_unlock(list);
 }
 
 struct net_buffer* net_buffer_create(int buffer_size)
@@ -777,6 +839,13 @@ struct net_worker* net_worker_create()
         goto _e1;
     }
 
+    if (-1 == linked_list_initialize(&worker->__client_list))
+    {
+        log_error("function call `linked_list_initialize` failed");
+
+        goto _e2;
+    }
+
     worker->worker_status = NET_WORKER_STATUS_READY;
 
     int result = pthread_create(&worker->worker_thread, NULL, net_worker_thread_main, worker);
@@ -802,6 +871,8 @@ void net_worker_destroy(struct net_worker* worker)
 
         pthread_join(worker->worker_thread, NULL);
     }
+
+    linked_list_uninitialize(&worker->__client_list);
 
     while (1)
     {
