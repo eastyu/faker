@@ -19,7 +19,7 @@
 
 #define CONFIG_CLIENT_DEFAULT_TIMEOUT       (1800 * 1000)
 #define CONFIG_LISTEN_BACKLOG               256
-#define CONFIG_LOG_LEVEL                    LOG_LEVEL_DEBUG
+#define CONFIG_LOG_LEVEL                    LOG_LEVEL_NONE
 #define CONFIG_RECV_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
 #define CONFIG_SEND_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
 #define CONFIG_BIND_ADDRESS                 "0.0.0.0"
@@ -51,6 +51,7 @@
 #define LOG_LEVEL_INFO                      1
 #define LOG_LEVEL_WARN                      2
 #define LOG_LEVEL_ERROR                     3
+#define LOG_LEVEL_NONE                      4
 
 #define container_of(ptr, type, member)     \
     (type*)((NULL == (ptr)) ? NULL : (char*)(ptr) - offsetof(type, member))
