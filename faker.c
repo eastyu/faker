@@ -926,6 +926,10 @@ int net_server_register_client(struct net_server* server, struct net_client* cli
 
     net_server_remove_worker(server, worker);
 
+    client->registered_event = event.events;
+
+    net_worker_add_client(worker, client);
+
     struct epoll_event event = { 0 };
     event.data.ptr = client;
     event.events = EPOLLIN | EPOLLET;
@@ -934,13 +938,12 @@ int net_server_register_client(struct net_server* server, struct net_client* cli
     {
         log_error("system call `epoll_ctl` failed with error %d", errno);
 
+        net_worker_remove_client(worker, client);
+
         net_server_add_worker(server, worker);
+        
         goto _e1;
     }
-
-    client->registered_event = event.events;
-
-    net_worker_add_client(worker, client);
 
     net_server_add_worker(server, worker);
 
