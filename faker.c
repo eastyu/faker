@@ -926,13 +926,13 @@ int net_server_register_client(struct net_server* server, struct net_client* cli
 
     net_server_remove_worker(server, worker);
 
-    client->registered_event = event.events;
-
-    net_worker_add_client(worker, client);
-
     struct epoll_event event = { 0 };
     event.data.ptr = client;
     event.events = EPOLLIN | EPOLLET;
+
+    client->registered_event = event.events;
+
+    net_worker_add_client(worker, client);
 
     if (-1 == epoll_ctl(worker->epoll_handle, EPOLL_CTL_ADD, client->client_socket, &event))
     {
@@ -941,7 +941,7 @@ int net_server_register_client(struct net_server* server, struct net_client* cli
         net_worker_remove_client(worker, client);
 
         net_server_add_worker(server, worker);
-        
+
         goto _e1;
     }
 
