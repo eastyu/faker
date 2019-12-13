@@ -19,7 +19,8 @@
 
 #define CONFIG_CLIENT_DEFAULT_TIMEOUT       (1800 * 1000)
 #define CONFIG_LISTEN_BACKLOG               256
-#define CONFIG_LOG_LEVEL                    LOG_LEVEL_NONE
+#define CONFIG_WORKER_SIZE_PER_SERVER       4
+#define CONFIG_LOG_LEVEL                    LOG_LEVEL_DEBUG
 #define CONFIG_RECV_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
 #define CONFIG_SEND_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
 #define CONFIG_BIND_ADDRESS                 "0.0.0.0"
@@ -1179,7 +1180,7 @@ int main(int argc, char const *argv[])
         goto _e1;
     }
 
-    if (-1 == net_server_run_event_loop(server, 2))
+    if (-1 == net_server_run_event_loop(server, CONFIG_WORKER_SIZE_PER_SERVER))
     {
         log_error("function call `net_server_run_event_loop` failed");
 
