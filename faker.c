@@ -19,7 +19,7 @@
 
 #define CONFIG_CLIENT_DEFAULT_TIMEOUT       (1800 * 1000)
 #define CONFIG_LISTEN_BACKLOG               256
-#define CONFIG_WORKER_SIZE_PER_SERVER       4
+#define CONFIG_WORKER_SIZE_PER_SERVER       2
 #define CONFIG_LOG_LEVEL                    LOG_LEVEL_NONE
 #define CONFIG_RECV_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
 #define CONFIG_SEND_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
@@ -106,7 +106,7 @@ struct net_client
     int client_type;
     struct list_item __item;
     struct linked_list __send_list;
-    struct linked_list __receive_list;
+    struct linked_list __recv_list;
 };
 
 struct net_worker
@@ -309,11 +309,22 @@ void linked_list_unlock(struct linked_list* list)
     }
 }
 
-struct list_item* linked_list_get_item(struct linked_list* list)
+struct list_item* linked_list_get_top_item(struct linked_list* list)
 {
     linked_list_lock(list);
 
     struct list_item* item = list->head;
+
+    linked_list_unlock(list);
+
+    return item;
+}
+
+struct list_item* linked_list_get_back_item(struct linked_list* list)
+{
+    linked_list_lock(list);
+
+    struct list_item* item = list->tail;
 
     linked_list_unlock(list);
 
@@ -331,7 +342,7 @@ int linked_list_get_size(struct linked_list* list)
     return size;
 }
 
-void linked_list_add_item(struct linked_list* list, struct list_item* item)
+void linked_list_push_item(struct linked_list* list, struct list_item* item)
 {
     linked_list_lock(list);
 
@@ -399,7 +410,7 @@ struct net_buffer* net_buffer_create(int buffer_size)
     }
 
     buffer->data_ptr = (char*)(buffer + 1);
-    buffer->data_size = buffer_size;
+    buffer->data_size = 0;
 
     log_debug("buffer %p with size %d is created", buffer, buffer_size);
 
@@ -444,9 +455,16 @@ struct net_client* net_client_create(int client_socket, int client_type)
     return client;
 }
 
-struct net_buffer* net_client_get_send_buffer(struct net_client* client)
+struct net_buffer* net_client_get_top_send_buffer(struct net_client* client)
 {
-    return container_of(linked_list_get_item(&client->__send_list), struct net_buffer, __item);
+    struct list_item* item = linked_list_get_top_item(&client->__send_list);
+    return container_of(item, struct net_buffer, __item);
+}
+
+struct net_buffer* net_client_get_back_send_buffer(struct net_client* client)
+{
+    struct list_item* item = linked_list_get_back_item(&client->__send_list);
+    return container_of(item, struct net_buffer, __item);
 }
 
 void net_client_remove_send_buffer(struct net_client* client, struct net_buffer* buffer)
@@ -454,24 +472,31 @@ void net_client_remove_send_buffer(struct net_client* client, struct net_buffer*
     linked_list_remove_item(&client->__send_list, &buffer->__item);
 }
 
-void net_client_add_send_buffer(struct net_client* client, struct net_buffer* buffer)
+void net_client_push_send_buffer(struct net_client* client, struct net_buffer* buffer)
 {
-    linked_list_add_item(&client->__send_list, &buffer->__item);
+    linked_list_push_item(&client->__send_list, &buffer->__item);
 }
 
-struct net_buffer* net_client_get_receive_buffer(struct net_client* client)
+struct net_buffer* net_client_get_top_receive_buffer(struct net_client* client)
 {
-    return container_of(linked_list_get_item(&client->__receive_list), struct net_buffer, __item);
+    struct list_item* item = linked_list_get_top_item(&client->__recv_list);
+    return container_of(item, struct net_buffer, __item);
+}
+
+struct net_buffer* net_client_get_back_receive_buffer(struct net_client* client)
+{
+    struct list_item* item = linked_list_get_back_item(&client->__recv_list);
+    return container_of(item, struct net_buffer, __item);
 }
 
 void net_client_remove_receive_buffer(struct net_client* client, struct net_buffer* buffer)
 {
-    linked_list_remove_item(&client->__receive_list, &buffer->__item);
+    linked_list_remove_item(&client->__recv_list, &buffer->__item);
 }
 
-void net_client_add_receive_buffer(struct net_client* client, struct net_buffer* buffer)
+void net_client_push_receive_buffer(struct net_client* client, struct net_buffer* buffer)
 {
-    linked_list_add_item(&client->__receive_list, &buffer->__item);
+    linked_list_push_item(&client->__recv_list, &buffer->__item);
 }
 
 int net_client_send_data(struct net_client* client, struct net_worker* worker)
@@ -482,7 +507,7 @@ int net_client_send_data(struct net_client* client, struct net_worker* worker)
 
     while (1)
     {
-        struct net_buffer* buffer = net_client_get_send_buffer(client);
+        struct net_buffer* buffer = net_client_get_top_send_buffer(client);
         if (NULL == buffer)
         {
             log_debug("no send buffer in the list");
@@ -556,7 +581,7 @@ int net_client_send_hello_world_test(struct net_client* client, struct net_worke
 
     buffer->data_size = strlen(http_resonse);
 
-    net_client_add_send_buffer(client, buffer);
+    net_client_push_send_buffer(client, buffer);
 
     if (-1 == net_client_send_data(client, worker))
     {
@@ -572,7 +597,7 @@ int net_client_handle_data(struct net_client* client, struct net_worker* worker)
 {
     while (1)
     {
-        struct net_buffer* buffer = net_client_get_receive_buffer(client);
+        struct net_buffer* buffer = net_client_get_top_receive_buffer(client);
         if (NULL == buffer)
         {
             break;
@@ -609,18 +634,30 @@ int net_client_receive_data(struct net_client* client, struct net_worker* worker
 {
     while (1)
     {
-        struct net_buffer* buffer = net_buffer_create(CONFIG_RECV_BUFFER_SIZE);
-        if (NULL == buffer)
+        int is_new_buffer = 0;
+
+        struct net_buffer* buffer = net_client_get_back_receive_buffer(client);
+        if (NULL == buffer || buffer->data_size >= CONFIG_RECV_BUFFER_SIZE)
         {
-            log_error("function call `net_buffer_create` failed");
-        _e1:
-            return -1;
+            buffer = net_buffer_create(CONFIG_RECV_BUFFER_SIZE);
+            if (NULL == buffer)
+            {
+                log_error("function call `net_buffer_create` failed");
+            _e1:
+                return -1;
+            }
+
+            is_new_buffer = 1;
         }
 
-        int length = recv(client->client_socket, buffer->data_ptr, CONFIG_RECV_BUFFER_SIZE, 0);
+        int length = recv(client->client_socket, buffer->data_ptr + buffer->data_size, 
+            CONFIG_RECV_BUFFER_SIZE - buffer->data_size, 0);
         if (0 >= length)
         {
-            net_buffer_destroy(buffer);
+            if (1 == is_new_buffer)
+            {
+                net_buffer_destroy(buffer);
+            }
 
             if (-1 == length && EAGAIN == errno)
             {
@@ -637,9 +674,12 @@ int net_client_receive_data(struct net_client* client, struct net_worker* worker
             goto _e1;
         }
 
-        buffer->data_size = length;
+        buffer->data_size += length;
 
-        net_client_add_receive_buffer(client, buffer);
+        if (1 == is_new_buffer)
+        {
+            net_client_push_receive_buffer(client, buffer);
+        }
 
         if (-1 == net_client_handle_data(client, worker))
         {
@@ -658,7 +698,7 @@ void net_client_destroy(struct net_client* client)
 
     while (1)
     {
-        buffer = net_client_get_send_buffer(client);
+        buffer = net_client_get_top_send_buffer(client);
         if (NULL == buffer)
         {
             break;
@@ -671,7 +711,7 @@ void net_client_destroy(struct net_client* client)
 
     while (1)
     {
-        buffer = net_client_get_receive_buffer(client);
+        buffer = net_client_get_top_receive_buffer(client);
         if (NULL == buffer)
         {
             break;
@@ -687,9 +727,10 @@ void net_client_destroy(struct net_client* client)
     log_debug("client %p with socket %d is destroyed", client, client->client_socket);
 }
 
-struct net_client* net_worker_get_client(struct net_worker* worker)
+struct net_client* net_worker_get_top_client(struct net_worker* worker)
 {
-    return container_of(linked_list_get_item(&worker->__client_list), struct net_client, __item);
+    struct list_item* item = linked_list_get_top_item(&worker->__client_list);
+    return container_of(item, struct net_client, __item);
 }
 
 void net_worker_remove_client(struct net_worker* worker, struct net_client* client)
@@ -697,9 +738,9 @@ void net_worker_remove_client(struct net_worker* worker, struct net_client* clie
     linked_list_remove_item(&worker->__client_list, &client->__item);
 }
 
-void net_worker_add_client(struct net_worker* worker, struct net_client* client)
+void net_worker_push_client(struct net_worker* worker, struct net_client* client)
 {
-    linked_list_add_item(&worker->__client_list, &client->__item);
+    linked_list_push_item(&worker->__client_list, &client->__item);
 }
 
 int net_worker_get_client_size(struct net_worker* worker)
@@ -723,7 +764,7 @@ int net_worker_handle_client_timeout(struct net_worker* worker)
 {
     while (1)
     {
-        struct net_client* client = net_worker_get_client(worker);
+        struct net_client* client = net_worker_get_top_client(worker);
         if (NULL == client)
         {
             log_debug("no client in the list");
@@ -744,7 +785,7 @@ int net_worker_handle_client_timeout(struct net_worker* worker)
         {
             net_client_reset_expire_time(client);
 
-            net_worker_add_client(worker, client);
+            net_worker_push_client(worker, client);
         }
         else
         {
@@ -793,7 +834,7 @@ void net_worker_handle_client_event(struct net_worker* worker, struct epoll_even
 
         net_client_reset_expire_time(client);
 
-        net_worker_add_client(worker, client);
+        net_worker_push_client(worker, client);
 
     } while (0);
 }
@@ -881,7 +922,7 @@ void net_worker_destroy(struct net_worker* worker)
 
     while (1)
     {
-        struct net_client* client = net_worker_get_client(worker);
+        struct net_client* client = net_worker_get_top_client(worker);
         if (NULL == client)
         {
             break;
@@ -899,14 +940,15 @@ void net_worker_destroy(struct net_worker* worker)
     log_debug("worker %p is destroyed", worker);
 }
 
-struct net_worker* net_server_get_worker(struct net_server* server)
+struct net_worker* net_server_get_top_worker(struct net_server* server)
 {
-    return container_of(linked_list_get_item(&server->__worker_list), struct net_worker, __item);
+    struct list_item* item = linked_list_get_top_item(&server->__worker_list);
+    return container_of(item, struct net_worker, __item);
 }
 
-void net_server_add_worker(struct net_server* server, struct net_worker* worker)
+void net_server_push_worker(struct net_server* server, struct net_worker* worker)
 {
-    linked_list_add_item(&server->__worker_list, &worker->__item);
+    linked_list_push_item(&server->__worker_list, &worker->__item);
 }
 
 int net_server_get_worker_size(struct net_server* server)
@@ -921,7 +963,7 @@ void net_server_remove_worker(struct net_server* server, struct net_worker* work
 
 int net_server_register_client(struct net_server* server, struct net_client* client)
 {
-    struct net_worker* worker = net_server_get_worker(server);
+    struct net_worker* worker = net_server_get_top_worker(server);
     if (NULL == worker)
     {
         log_error("no worker in the list");
@@ -937,7 +979,7 @@ int net_server_register_client(struct net_server* server, struct net_client* cli
 
     client->registered_event = event.events;
 
-    net_worker_add_client(worker, client);
+    net_worker_push_client(worker, client);
 
     if (-1 == epoll_ctl(worker->epoll_handle, EPOLL_CTL_ADD, client->client_socket, &event))
     {
@@ -945,12 +987,12 @@ int net_server_register_client(struct net_server* server, struct net_client* cli
 
         net_worker_remove_client(worker, client);
 
-        net_server_add_worker(server, worker);
+        net_server_push_worker(server, worker);
 
         goto _e1;
     }
 
-    net_server_add_worker(server, worker);
+    net_server_push_worker(server, worker);
 
     return 0;
 }
@@ -1082,7 +1124,7 @@ void net_server_destroy(struct net_server* server)
     
     while (1)
     {
-        struct net_worker* worker = net_server_get_worker(server);
+        struct net_worker* worker = net_server_get_top_worker(server);
         if (NULL == worker)
         {
             break;
@@ -1114,7 +1156,7 @@ int net_server_run_event_loop(struct net_server* server, int worker_size)
             continue;
         }
 
-        net_server_add_worker(server, worker);
+        net_server_push_worker(server, worker);
     }
 
     if (0 == net_server_get_worker_size(server))
@@ -1131,7 +1173,7 @@ int net_server_run_event_loop(struct net_server* server, int worker_size)
 
         while (1)
         {
-            struct net_worker* worker = net_server_get_worker(server);
+            struct net_worker* worker = net_server_get_top_worker(server);
             if (NULL == worker)
             {
                 break;
