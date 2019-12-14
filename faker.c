@@ -193,7 +193,7 @@ void signal_handler(int signal, siginfo_t* sig_info, void* context)
     if (SIGUSR1 == signal)
     {
         struct net_server* server = (struct net_server*)sig_info->si_value.sival_ptr;
-        
+
         server->server_status = NET_SERVER_STATUS_EXIT;
 
         log_debug("server %p received SIGUSR1", server);
@@ -202,7 +202,7 @@ void signal_handler(int signal, siginfo_t* sig_info, void* context)
     if (SIGUSR2 == signal)
     {
         struct net_worker* worker = (struct net_worker*)sig_info->si_value.sival_ptr;
-        
+
         worker->worker_status = NET_WORKER_STATUS_EXIT;
 
         log_debug("worker %p received SIGUSR2", worker);
@@ -218,7 +218,7 @@ int signal_init(int* signums, int signal_size)
     _e1:
         return -1;
     }
-    
+
     action.sa_sigaction = signal_handler;
     action.sa_flags = SA_SIGINFO | SA_RESTART;
 
@@ -261,6 +261,7 @@ int create_listen_socket_and_bind(const char* bind_addr, int listen_port)
     if (-1 == listen(listen_socket, CONFIG_LISTEN_BACKLOG))
     {
         log_error("system call `listen` failed with error %d", errno);
+
         goto _e2;
     }
 
@@ -395,6 +396,25 @@ void linked_list_remove_item(struct linked_list* list, struct list_item* item)
     item->next = NULL;
 
     list->list_size --;
+
+    linked_list_unlock(list);
+}
+
+void linked_list_for_each(struct linked_list* list, int(*call_back)(struct list_item*))
+{
+    linked_list_lock(list);
+
+    struct list_item* item = list->head;
+    while (NULL != item)
+    {
+        struct list_item* tmp = item;
+        item = item->next;
+
+        if (-1 == call_back(tmp))
+        {
+            break;
+        }
+    }
 
     linked_list_unlock(list);
 }
@@ -1026,7 +1046,7 @@ int net_server_accept_new_client(struct net_server* server)
         if (NULL == client)
         {
             log_error("function call `net_client_create` failed");
-            
+
             goto _e1;
         }
 
@@ -1037,7 +1057,7 @@ int net_server_accept_new_client(struct net_server* server)
             net_client_destroy(client);
             goto _e1;
         }
-        
+
         log_debug("new client %p with socket %d is connected", client, client_socket);
     }
 
@@ -1121,7 +1141,7 @@ void net_server_destroy(struct net_server* server)
 
         pthread_join(server->server_thread, NULL);
     }
-    
+
     while (1)
     {
         struct net_worker* worker = net_server_get_top_worker(server);
