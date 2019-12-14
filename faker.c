@@ -20,7 +20,7 @@
 #define CONFIG_CLIENT_DEFAULT_TIMEOUT       (1800 * 1000)
 #define CONFIG_LISTEN_BACKLOG               256
 #define CONFIG_WORKER_SIZE_PER_SERVER       4
-#define CONFIG_LOG_LEVEL                    LOG_LEVEL_DEBUG
+#define CONFIG_LOG_LEVEL                    LOG_LEVEL_NONE
 #define CONFIG_RECV_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
 #define CONFIG_SEND_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
 #define CONFIG_BIND_ADDRESS                 "0.0.0.0"
@@ -295,7 +295,7 @@ int linked_list_uninitialize(struct linked_list* list)
 
 void linked_list_lock(struct linked_list* list)
 {
-    if (list->thread_safe)
+    if (1 == list->thread_safe)
     {
         pthread_spin_lock(&list->lock);
     }
@@ -503,7 +503,11 @@ int net_client_send_data(struct net_client* client, struct net_worker* worker)
                     goto _end;
                 }
 
-                log_error("system call `send` failed with error %d", errno);
+                if (0 != length)
+                {
+                    log_error("system call `send` failed with error %d", errno);
+                }
+
             _e1:
                 return -1;
             }
@@ -680,7 +684,7 @@ void net_client_destroy(struct net_client* client)
 
     free(client);
 
-    log_debug("client %p is destroyed", client);
+    log_debug("client %p with socket %d is destroyed", client, client->client_socket);
 }
 
 struct net_client* net_worker_get_client(struct net_worker* worker)
@@ -705,8 +709,8 @@ int net_worker_get_client_size(struct net_worker* worker)
 
 void net_worker_close_client(struct net_worker* worker, struct net_client* client, int reason)
 {
-    log_debug("client %p with socket %d is being closed with status %d",
-        client, client->client_socket, client->client_status);
+    log_debug("client %p with socket %d is being closed with status %d for reason %d",
+        client, client->client_socket, client->client_status, reason);
 
     epoll_ctl(worker->epoll_handle, EPOLL_CTL_DEL, client->client_socket, NULL);
 
