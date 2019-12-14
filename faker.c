@@ -400,25 +400,6 @@ void linked_list_remove_item(struct linked_list* list, struct list_item* item)
     linked_list_unlock(list);
 }
 
-void linked_list_for_each(struct linked_list* list, int(*call_back)(struct list_item*))
-{
-    linked_list_lock(list);
-
-    struct list_item* item = list->head;
-    while (NULL != item)
-    {
-        struct list_item* tmp = item;
-        item = item->next;
-
-        if (-1 == call_back(tmp))
-        {
-            break;
-        }
-    }
-
-    linked_list_unlock(list);
-}
-
 struct net_buffer* net_buffer_create(int buffer_size)
 {
     struct net_buffer* buffer = calloc(1, sizeof(struct net_buffer) + buffer_size);
@@ -981,9 +962,37 @@ void net_server_remove_worker(struct net_server* server, struct net_worker* work
     linked_list_remove_item(&server->__worker_list, &worker->__item);
 }
 
+struct net_worker* net_server_find_balanced_worker(struct net_server* server)
+{
+    linked_list_lock(&server->__worker_list);
+
+    struct net_worker* worker = NULL, *temp = NULL;
+
+    for (struct list_item* item = server->__worker_list.head; NULL != item; item = item->next)
+    {
+        temp = container_of(item, struct net_worker, __item);
+
+        if (NULL == worker)
+        {
+            worker = temp;
+            continue;
+        }
+
+        if (net_worker_get_client_size(temp) < net_worker_get_client_size(worker))
+        {
+            worker = temp;
+            continue;
+        }
+    }
+
+    linked_list_lock(&server->__worker_list);
+
+    return worker;
+}
+
 int net_server_register_client(struct net_server* server, struct net_client* client)
 {
-    struct net_worker* worker = net_server_get_top_worker(server);
+    struct net_worker* worker = net_server_find_balanced_worker(server);
     if (NULL == worker)
     {
         log_error("no worker in the list");
