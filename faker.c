@@ -28,9 +28,18 @@
 #define CONFIG_SEND_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
 #define CONFIG_BIND_ADDRESS                 "0.0.0.0"
 #define CONFIG_LISTEN_PORT                  9999
-#define CONFIG_CRT_FILE                     ""
-#define CONFIG_KEY_FILE                     ""
-#define CONFIG_CIPHER_SUIT                  ""
+#define CONFIG_CRT_FILE                     "server.crt"
+#define CONFIG_KEY_FILE                     "server.key"
+#define CONFIG_CIPHER_SUIT                  "ECDHE-ECDSA-AES256-GCM-SHA384:"    \
+                                            "ECDHE-RSA-AES256-GCM-SHA384:"      \
+                                            "ECDHE-ECDSA-CHACHA20-POLY1305:"    \
+                                            "ECDHE-RSA-CHACHA20-POLY1305:"      \
+                                            "ECDHE-ECDSA-AES128-GCM-SHA256:"    \
+                                            "ECDHE-RSA-AES128-GCM-SHA256:"      \
+                                            "ECDHE-ECDSA-AES256-SHA384:"        \
+                                            "ECDHE-RSA-AES256-SHA384:"          \
+                                            "ECDHE-ECDSA-AES128-SHA256:"        \
+                                            "ECDHE-RSA-AES128-SHA256"
 
 #define EPOLL_EVENT_SIZE                    256
 
