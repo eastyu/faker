@@ -991,7 +991,7 @@ struct net_worker* net_worker_create()
     if (-1 == linked_list_initialize(&worker->__client_list))
     {
         log_error("function call `linked_list_initialize` failed");
-
+    _e4:
         ssl_ctx_destroy(worker->ssl_ctx);
         goto _e3;
     }
@@ -1003,8 +1003,8 @@ struct net_worker* net_worker_create()
     {
         log_error("system call `pthread_create` failed with error %d", result);
 
-        close(worker->epoll_handle);
-        goto _e2;
+        linked_list_uninitialize(&worker->__client_list);
+        goto _e4;
     }
 
     log_debug("worker %p is created", worker);
@@ -1036,6 +1036,8 @@ void net_worker_destroy(struct net_worker* worker)
 
         net_worker_close_client(worker, client, CLOSED_EXIT);
     }
+
+    ssl_ctx_destroy(worker->ssl_ctx);
 
     close(worker->epoll_handle);
 
