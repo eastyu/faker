@@ -17,6 +17,9 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+
 #define CONFIG_CLIENT_DEFAULT_TIMEOUT       (1800 * 1000)
 #define CONFIG_LISTEN_BACKLOG               256
 #define CONFIG_WORKER_SIZE_PER_SERVER       2
@@ -25,6 +28,9 @@
 #define CONFIG_SEND_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
 #define CONFIG_BIND_ADDRESS                 "0.0.0.0"
 #define CONFIG_LISTEN_PORT                  9999
+#define CONFIG_CRT_FILE                     ""
+#define CONFIG_KEY_FILE                     ""
+#define CONFIG_CIPHER_SUIT                  ""
 
 #define EPOLL_EVENT_SIZE                    256
 
@@ -104,6 +110,7 @@ struct net_client
     int registered_event;
     int client_status;
     int client_type;
+    SSL* ssl_channel;
     struct list_item __item;
     struct linked_list __send_list;
     struct linked_list __recv_list;
@@ -113,6 +120,7 @@ struct net_worker
 {
     int worker_status;
     int epoll_handle;
+    SSL_CTX* ssl_ctx;
     pthread_t worker_thread;
     struct list_item __item;
     struct linked_list __client_list;
@@ -398,6 +406,91 @@ void linked_list_remove_item(struct linked_list* list, struct list_item* item)
     list->list_size --;
 
     linked_list_unlock(list);
+}
+
+SSL_CTX* ssl_ctx_create()
+{
+    SSL_CTX* ssl_ctx = SSL_CTX_new(TLS_method());
+    if (NULL == ssl_ctx)
+    {
+        log_error("system call `SSL_CTX_new` failed with error %d", ERR_get_error());
+    _e1:
+        return NULL;
+    }
+
+    if (1 != SSL_CTX_use_certificate_file(ssl_ctx, CONFIG_CRT_FILE, SSL_FILETYPE_PEM))
+    {
+        log_error("system call `SSL_CTX_use_certificate_file` failed with error %d", ERR_get_error());
+    _e2:
+        SSL_CTX_free(ssl_ctx);
+        goto _e1;
+    }
+
+    if (1 != SSL_CTX_use_PrivateKey_file(ssl_ctx, CONFIG_KEY_FILE, SSL_FILETYPE_PEM))
+    {
+        log_error("system call `SSL_CTX_use_PrivateKey_file` failed with error %d", ERR_get_error());
+
+        goto _e2;
+    }
+
+    if (1 != SSL_CTX_check_private_key(ssl_ctx))
+    {
+        log_error("system call `SSL_CTX_check_private_key` failed with error %d", ERR_get_error());
+
+        goto _e2;
+    }
+
+    if (1 != SSL_CTX_set_cipher_list(ssl_ctx, CONFIG_CIPHER_SUIT))
+    {
+        log_error("system call `SSL_CTX_set_cipher_list` failed with error %d", ERR_get_error());
+
+        goto _e2;
+    }
+
+    return ssl_ctx;
+}
+
+void ssl_ctx_destroy(SSL_CTX* ssl_ctx)
+{
+    SSL_CTX_free(ssl_ctx);
+}
+
+SSL* ssl_channel_create(SSL_CTX* ssl_ctx)
+{
+    SSL* ssl_channel = SSL_new(ssl_ctx);
+    if (NULL == ssl_channel)
+    {
+        log_error("system call `SSL_new` failed with error %d", ERR_get_error());
+    _e1:
+        return NULL;
+    }
+
+    BIO* rbio = BIO_new(BIO_s_mem());
+    if (NULL == rbio)
+    {
+        log_error("system call `BIO_new` failed with error %d", ERR_get_error());
+    _e2:
+        SSL_free(ssl_channel);
+        goto _e1;
+    }
+
+    BIO* wbio = BIO_new(BIO_s_mem());
+    if (NULL == wbio)
+    {
+        log_error("system call `BIO_new` failed with error %d", ERR_get_error());
+
+        BIO_free(rbio);
+        goto _e2;
+    }
+
+    SSL_set_bio(ssl_channel, rbio, wbio);
+
+    return ssl_channel;
+}
+
+void ssl_channel_destroy(SSL* ssl_channel)
+{
+    SSL_free(ssl_channel);
 }
 
 struct net_buffer* net_buffer_create(int buffer_size)
@@ -886,11 +979,21 @@ struct net_worker* net_worker_create()
         goto _e1;
     }
 
+    worker->ssl_ctx = ssl_ctx_create();
+    if (NULL == worker->ssl_ctx)
+    {
+        log_error("function call `ssl_ctx_create` failed");
+    _e3:
+        close(worker->epoll_handle);
+        goto _e2;
+    }
+
     if (-1 == linked_list_initialize(&worker->__client_list))
     {
         log_error("function call `linked_list_initialize` failed");
 
-        goto _e2;
+        ssl_ctx_destroy(worker->ssl_ctx);
+        goto _e3;
     }
 
     worker->worker_status = NET_WORKER_STATUS_READY;
