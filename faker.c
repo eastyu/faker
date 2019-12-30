@@ -52,6 +52,7 @@
 #define NET_SERVER_STATUS_EXIT              1
 
 #define NET_CLIENT_STATUS_CONNECTED         0
+#define NET_CLIENT_STATUS_SSL_WAIT          1
 
 #define CLOSED_TIMEOUT                      0
 #define CLOSED_ERROR                        1
@@ -121,6 +122,7 @@ struct net_client
     int client_type;
     SSL* ssl_channel;
     struct list_item __item;
+    struct linked_list __data;
     struct linked_list __send;
     struct linked_list __recv;
 };
@@ -582,6 +584,28 @@ void net_client_push_send_buffer(struct net_client* client, struct net_buffer* b
     linked_list_push_item(&client->__send, &buffer->__item);
 }
 
+struct net_buffer* net_client_get_top_data_buffer(struct net_client* client)
+{
+    struct list_item* item = linked_list_get_top_item(&client->__data);
+    return container_of(item, struct net_buffer, __item);
+}
+
+struct net_buffer* net_client_get_back_data_buffer(struct net_client* client)
+{
+    struct list_item* item = linked_list_get_back_item(&client->__data);
+    return container_of(item, struct net_buffer, __item);
+}
+
+void net_client_remove_data_buffer(struct net_client* client, struct net_buffer* buffer)
+{
+    linked_list_remove_item(&client->__data, &buffer->__item);
+}
+
+void net_client_push_data_buffer(struct net_client* client, struct net_buffer* buffer)
+{
+    linked_list_push_item(&client->__data, &buffer->__item);
+}
+
 struct net_buffer* net_client_get_top_receive_buffer(struct net_client* client)
 {
     struct list_item* item = linked_list_get_top_item(&client->__recv);
@@ -785,13 +809,13 @@ int net_client_receive_data(struct net_client* client, struct net_worker* worker
         {
             net_client_push_receive_buffer(client, buffer);
         }
+    }
 
-        if (-1 == net_client_handle_data(client, worker))
-        {
-            log_error("function call `net_client_handle_data` failed");
+    if (-1 == net_client_handle_data(client, worker))
+    {
+        log_error("function call `net_client_handle_data` failed");
 
-            goto _e1;
-        }
+        goto _e1;
     }
 
     return 0;
@@ -825,6 +849,11 @@ void net_client_destroy(struct net_client* client)
         net_client_remove_receive_buffer(client, buffer);
 
         net_buffer_destroy(buffer);
+    }
+
+    if (NULL != client->ssl_channel)
+    {
+        ssl_channel_destroy(client->ssl_channel);
     }
 
     free(client);
@@ -1123,6 +1152,19 @@ int net_server_register_client(struct net_server* server, struct net_client* cli
 
     client->registered_event = event.events;
 
+    if (1 == server->ssl_enable)
+    {
+        client->ssl_channel = ssl_channel_create(worker->ssl_ctx);
+        if (NULL == client->ssl_channel)
+        {
+            log_error("function call `ssl_channel_create` failed");
+        _e2:
+            net_server_push_worker(server, worker);
+
+            goto _e1;
+        }
+    }
+
     net_worker_push_client(worker, client);
 
     if (-1 == epoll_ctl(worker->epoll_handle, EPOLL_CTL_ADD, client->client_socket, &event))
@@ -1131,9 +1173,7 @@ int net_server_register_client(struct net_server* server, struct net_client* cli
 
         net_worker_remove_client(worker, client);
 
-        net_server_push_worker(server, worker);
-
-        goto _e1;
+        goto _e2;
     }
 
     net_server_push_worker(server, worker);
@@ -1172,6 +1212,11 @@ int net_server_accept_new_client(struct net_server* server)
             log_error("function call `net_client_create` failed");
 
             goto _e1;
+        }
+
+        if (1 == server->ssl_enable)
+        {
+            client->client_status = NET_CLIENT_STATUS_SSL_WAIT;
         }
 
         if (-1 == net_server_register_client(server, client))
@@ -1364,7 +1409,7 @@ int main(int argc, char const *argv[])
         goto _e1;
     }
 
-    struct net_server* server = net_server_create(listen_socket, 0);
+    struct net_server* server = net_server_create(listen_socket, 1);
     if (NULL == server)
     {
         log_error("function call `net_server_create` failed");
