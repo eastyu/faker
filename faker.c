@@ -140,6 +140,7 @@ struct net_server
     int listen_socket;
     int epoll_handle;
     int server_status;
+    int ssl_enable;
     pthread_t server_thread;
     struct list_item __item;
     struct linked_list __worker;
@@ -970,7 +971,7 @@ void* net_worker_thread_main(void* args)
     return NULL;
 }
 
-struct net_worker* net_worker_create()
+struct net_worker* net_worker_create(int ssl_enable)
 {
     struct net_worker* worker = calloc(1, sizeof(struct net_worker));
     if (NULL == worker)
@@ -989,8 +990,7 @@ struct net_worker* net_worker_create()
         goto _e1;
     }
 
-    worker->ssl_ctx = ssl_ctx_create();
-    if (NULL == worker->ssl_ctx)
+    if (1 == ssl_enable && NULL == (worker->ssl_ctx = ssl_ctx_create()))
     {
         log_error("function call `ssl_ctx_create` failed");
     _e3:
@@ -1217,7 +1217,7 @@ void* net_server_thread_main(void* args)
     return NULL;
 }
 
-struct net_server* net_server_create(int listen_socket)
+struct net_server* net_server_create(int listen_socket, int ssl_enable)
 {
     struct net_server* server = calloc(1, sizeof(struct net_server));
     if (NULL == server)
@@ -1250,6 +1250,7 @@ struct net_server* net_server_create(int listen_socket)
 
     server->server_status = NET_SERVER_STATUS_READY;
     server->listen_socket = listen_socket;
+    server->ssl_enable = ssl_enable;
 
     log_debug("server %p is created with socket %d", server, listen_socket);
 
@@ -1292,7 +1293,7 @@ int net_server_run_event_loop(struct net_server* server, int worker_size)
 {
     for (int i = 0; i < worker_size; i++)
     {
-        struct net_worker* worker = net_worker_create();
+        struct net_worker* worker = net_worker_create(server->ssl_enable);
         if (NULL == worker)
         {
             log_error("function call `net_worker_create` failed");
@@ -1363,7 +1364,7 @@ int main(int argc, char const *argv[])
         goto _e1;
     }
 
-    struct net_server* server = net_server_create(listen_socket);
+    struct net_server* server = net_server_create(listen_socket, 0);
     if (NULL == server)
     {
         log_error("function call `net_server_create` failed");
