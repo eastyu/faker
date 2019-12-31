@@ -708,14 +708,14 @@ int net_client_write_data_to_ssl(struct net_client* client)
             int length = BIO_write(rbio, buffer->data_ptr, buffer->data_size);
             if (0 >= length)
             {
-                if (1 != BIO_should_retry(rbio))
+                if (0 != BIO_should_retry(rbio))
                 {
-                    log_error("system call `BIO_write` failed with error %d", ERR_get_error());
-
-                    return -1;
+                    goto _end;
                 }
 
-                goto _end;
+                log_error("system call `BIO_write` failed with error %d", ERR_get_error());
+
+                return -1;
             }
 
             buffer->data_ptr += length;
@@ -762,14 +762,14 @@ int net_client_read_data_from_ssl(struct net_client* client)
                 net_buffer_destroy(buffer);
             }
 
-            if (1 != BIO_should_retry(wbio))
+            if (0 != BIO_should_retry(wbio))
             {
-                log_error("system call `BIO_read` failed with error %d", ERR_get_error());
-
-                goto _e1;
+                break;
             }
 
-            break;
+            log_error("system call `BIO_read` failed with error %d", ERR_get_error());
+
+            goto _e1;
         }
 
         buffer->data_ptr += length;
@@ -1121,9 +1121,9 @@ void net_client_destroy(struct net_client* client)
         ssl_channel_destroy(client->ssl_channel);
     }
 
-    free(client);
-
     log_debug("client %p with socket %d is destroyed", client, client->client_socket);
+
+    free(client);
 }
 
 struct net_client* net_worker_get_top_client(struct net_worker* worker)
