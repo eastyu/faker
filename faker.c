@@ -668,7 +668,11 @@ int net_client_send_data(struct net_client* client, struct net_worker* worker)
                     goto _end;
                 }
 
-                log_error("system call `send` failed with error %d", errno);
+                if (0 != length)
+                {
+                    log_error("system call `send` failed with error %d", errno);
+                }
+                
             _e1:
                 log_function_leave();
 
@@ -1369,6 +1373,7 @@ void net_worker_handle_client_event(struct net_worker* worker, struct epoll_even
             log_error("error happened with client socket");
         _e1:
             net_worker_close_client(worker, client, CLOSED_ERROR);
+
             break;
         }
 
@@ -1442,6 +1447,7 @@ struct net_worker* net_worker_create(int ssl_enable)
         log_error("system call `epoll_create` failed with error %d", errno);
     _e2:
         free(worker);
+
         goto _e1;
     }
 
@@ -1450,6 +1456,7 @@ struct net_worker* net_worker_create(int ssl_enable)
         log_error("function call `ssl_ctx_create` failed");
     _e3:
         close(worker->epoll_handle);
+
         goto _e2;
     }
 
@@ -1458,6 +1465,7 @@ struct net_worker* net_worker_create(int ssl_enable)
         log_error("function call `linked_list_initialize` failed");
     _e4:
         ssl_ctx_destroy(worker->ssl_ctx);
+
         goto _e3;
     }
 
@@ -1469,6 +1477,7 @@ struct net_worker* net_worker_create(int ssl_enable)
         log_error("system call `pthread_create` failed with error %d", result);
 
         linked_list_uninitialize(&worker->__client);
+
         goto _e4;
     }
 
@@ -1545,12 +1554,14 @@ struct net_worker* net_server_find_balanced_worker(struct net_server* server)
         if (NULL == worker)
         {
             worker = temp;
+
             continue;
         }
 
         if (net_worker_get_client_size(temp) < net_worker_get_client_size(worker))
         {
             worker = temp;
+
             continue;
         }
     }
@@ -1614,14 +1625,14 @@ int net_server_accept_new_client(struct net_server* server)
         int client_socket = accept(server->listen_socket, NULL, NULL);
         if (-1 == client_socket)
         {
-            if (EAGAIN != errno)
+            if (-1 == client_socket && EAGAIN == errno)
             {
-                log_error("system call `accept` failed with error %d", errno);
-
-                return -1;
+                break;
             }
 
-            break;
+            log_error("system call `accept` failed with error %d", errno);
+
+            return -1;
         }
 
         if (-1 == set_socket_to_nonblock(client_socket))
@@ -1629,6 +1640,7 @@ int net_server_accept_new_client(struct net_server* server)
             log_error("function call `set_socket_to_nonblock` failed");
         _e1:
             close(client_socket);
+
             continue;
         }
 
@@ -1650,6 +1662,7 @@ int net_server_accept_new_client(struct net_server* server)
             log_error("function call `net_server_register_client` failed");
 
             net_client_destroy(client);
+
             goto _e1;
         }
 
@@ -1704,6 +1717,7 @@ struct net_server* net_server_create(int listen_socket, int ssl_enable)
         log_error("system call `epoll_create` failed with error %d", errno);
     _e2:
         free(server);
+
         goto _e1;
     }
 
@@ -1716,6 +1730,7 @@ struct net_server* net_server_create(int listen_socket, int ssl_enable)
         log_error("system call `epoll_Ctl` failed with error %d", errno);
 
         close(server->epoll_handle);
+
         goto _e2;
     }
 
@@ -1841,6 +1856,7 @@ int main(int argc, char const *argv[])
         log_error("function call `net_server_create` failed");
     _e2:
         close(listen_socket);
+
         goto _e1;
     }
 
@@ -1849,6 +1865,7 @@ int main(int argc, char const *argv[])
         log_error("function call `net_server_run_event_loop` failed");
 
         net_server_destroy(server);
+
         goto _e2;
     }
 
