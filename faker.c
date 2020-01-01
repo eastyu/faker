@@ -110,6 +110,7 @@ struct net_buffer
 {
     char* data_ptr;
     int data_size;
+    int buffer_size;
     struct list_item __item;
 };
 
@@ -117,7 +118,7 @@ struct net_client
 {
     int client_socket;
     int expire_time;
-    int registered_event;
+    int registered_events;
     int client_status;
     int client_type;
     SSL* ssl_channel;
@@ -433,7 +434,8 @@ SSL_CTX* ssl_ctx_create()
 
     if (1 != SSL_CTX_use_certificate_file(ssl_ctx, CONFIG_CRT_FILE, SSL_FILETYPE_PEM))
     {
-        log_error("system call `SSL_CTX_use_certificate_file` failed with error %d", ERR_get_error());
+        log_error("system call `SSL_CTX_use_certificate_file` failed with error %d",
+            ERR_get_error());
     _e2:
         SSL_CTX_free(ssl_ctx);
         goto _e1;
@@ -441,21 +443,24 @@ SSL_CTX* ssl_ctx_create()
 
     if (1 != SSL_CTX_use_PrivateKey_file(ssl_ctx, CONFIG_KEY_FILE, SSL_FILETYPE_PEM))
     {
-        log_error("system call `SSL_CTX_use_PrivateKey_file` failed with error %d", ERR_get_error());
+        log_error("system call `SSL_CTX_use_PrivateKey_file` failed with error %d",
+            ERR_get_error());
 
         goto _e2;
     }
 
     if (1 != SSL_CTX_check_private_key(ssl_ctx))
     {
-        log_error("system call `SSL_CTX_check_private_key` failed with error %d", ERR_get_error());
+        log_error("system call `SSL_CTX_check_private_key` failed with error %d",
+            ERR_get_error());
 
         goto _e2;
     }
 
     if (1 != SSL_CTX_set_cipher_list(ssl_ctx, CONFIG_CIPHER_SUIT))
     {
-        log_error("system call `SSL_CTX_set_cipher_list` failed with error %d", ERR_get_error());
+        log_error("system call `SSL_CTX_set_cipher_list` failed with error %d",
+            ERR_get_error());
 
         goto _e2;
     }
@@ -519,6 +524,8 @@ struct net_buffer* net_buffer_create(int buffer_size)
     buffer->data_ptr = (char*)(buffer + 1);
     buffer->data_size = 0;
 
+    buffer->buffer_size = buffer_size;
+
     log_debug("buffer %p with size %d is created", buffer, buffer_size);
 
     return buffer;
@@ -529,6 +536,11 @@ void net_buffer_destroy(struct net_buffer* buffer)
     free(buffer);
 
     log_debug("buffer %p is destroyed", buffer);
+}
+
+int net_buffer_get_available_size(struct net_buffer* buffer)
+{
+    return buffer->buffer_size - (buffer->data_ptr - (char*)(buffer + 1)) - buffer->data_size;
 }
 
 int net_client_get_remaining_time(struct net_client* client)
@@ -606,41 +618,41 @@ void net_client_push_data_buffer(struct net_client* client, struct net_buffer* b
     linked_list_push_item(&client->__data, &buffer->__item);
 }
 
-struct net_buffer* net_client_get_top_receive_buffer(struct net_client* client)
+struct net_buffer* net_client_get_top_recv_buffer(struct net_client* client)
 {
     struct list_item* item = linked_list_get_top_item(&client->__recv);
     return container_of(item, struct net_buffer, __item);
 }
 
-struct net_buffer* net_client_get_back_receive_buffer(struct net_client* client)
+struct net_buffer* net_client_get_back_recv_buffer(struct net_client* client)
 {
     struct list_item* item = linked_list_get_back_item(&client->__recv);
     return container_of(item, struct net_buffer, __item);
 }
 
-void net_client_remove_receive_buffer(struct net_client* client, struct net_buffer* buffer)
+void net_client_remove_recv_buffer(struct net_client* client, struct net_buffer* buffer)
 {
     linked_list_remove_item(&client->__recv, &buffer->__item);
 }
 
-void net_client_push_receive_buffer(struct net_client* client, struct net_buffer* buffer)
+void net_client_push_recv_buffer(struct net_client* client, struct net_buffer* buffer)
 {
     linked_list_push_item(&client->__recv, &buffer->__item);
 }
 
 int net_client_send_data(struct net_client* client, struct net_worker* worker)
 {
+    log_function_leave();
+
     struct epoll_event event = { 0 };
     event.data.ptr = client;
-    event.events = EPOLLET | EPOLLIN;
+    event.events = EPOLLIN | EPOLLET;
 
     while (1)
     {
         struct net_buffer* buffer = net_client_get_top_send_buffer(client);
         if (NULL == buffer)
         {
-            log_debug("no send buffer in the list");
-
             break;
         }
 
@@ -651,23 +663,23 @@ int net_client_send_data(struct net_client* client, struct net_worker* worker)
             {
                 if (-1 == length && EAGAIN == errno)
                 {
-                    log_debug("need to send again later");
-
                     event.events |= EPOLLOUT;
+
                     goto _end;
                 }
 
-                if (0 != length)
-                {
-                    log_error("system call `send` failed with error %d", errno);
-                }
-
+                log_error("system call `send` failed with error %d", errno);
             _e1:
+                log_function_leave();
+
                 return -1;
             }
 
-            buffer->data_size -= length;
+            log_debug("%d bytes data are sent to client %d with socket %d",
+                length, client, client->client_socket);
+
             buffer->data_ptr += length;
+            buffer->data_size -= length;
         }
 
         net_client_remove_send_buffer(client, buffer);
@@ -676,7 +688,7 @@ int net_client_send_data(struct net_client* client, struct net_worker* worker)
     }
 
 _end:
-    if (client->registered_event != event.events)
+    if (event.events != client->registered_events)
     {
         if (-1 == epoll_ctl(worker->epoll_handle, EPOLL_CTL_MOD, client->client_socket, &event))
         {
@@ -685,49 +697,11 @@ _end:
             goto _e1;
         }
 
-        client->registered_event = event.events;
+        client->registered_events = event.events;
     }
 
-    return 0;
-}
+    log_function_leave();
 
-int net_client_write_data_to_ssl(struct net_client* client)
-{
-    while (1)
-    {
-        struct net_buffer* buffer = net_client_get_top_receive_buffer(client);
-        if (NULL == buffer)
-        {
-            break;
-        }
-
-        while (buffer->data_size > 0)
-        {
-            BIO* rbio = SSL_get_rbio(client->ssl_channel);
-
-            int length = BIO_write(rbio, buffer->data_ptr, buffer->data_size);
-            if (0 >= length)
-            {
-                if (0 != BIO_should_retry(rbio))
-                {
-                    goto _end;
-                }
-
-                log_error("system call `BIO_write` failed with error %d", ERR_get_error());
-
-                return -1;
-            }
-
-            buffer->data_ptr += length;
-            buffer->data_size -= length;
-        }
-
-        net_client_remove_receive_buffer(client, buffer);
-
-        net_buffer_destroy(buffer);
-    }
-
-_end:
     return 0;
 }
 
@@ -735,10 +709,10 @@ int net_client_read_data_from_ssl(struct net_client* client)
 {
     while (1)
     {
-        int is_new_buffer = 0;
+        int is_new_buffer = 0, available_size = CONFIG_SEND_BUFFER_SIZE;
 
         struct net_buffer* buffer = net_client_get_back_send_buffer(client);
-        if (NULL == buffer || buffer->data_size >= CONFIG_SEND_BUFFER_SIZE)
+        if (NULL == buffer || 0 >= (available_size = net_buffer_get_available_size(buffer)))
         {
             buffer = net_buffer_create(CONFIG_SEND_BUFFER_SIZE);
             if (NULL == buffer)
@@ -751,10 +725,8 @@ int net_client_read_data_from_ssl(struct net_client* client)
             is_new_buffer = 1;
         }
 
-        BIO* wbio = SSL_get_wbio(client->ssl_channel);
-
-        int length = BIO_read(wbio, buffer->data_ptr + buffer->data_size, 
-                CONFIG_SEND_BUFFER_SIZE - buffer->data_size);
+        int length = BIO_read(SSL_get_wbio(client->ssl_channel),
+            buffer->data_ptr + buffer->data_size, available_size);
         if (0 >= length)
         {
             if (1 == is_new_buffer)
@@ -762,18 +734,19 @@ int net_client_read_data_from_ssl(struct net_client* client)
                 net_buffer_destroy(buffer);
             }
 
-            if (0 != BIO_should_retry(wbio))
+            if (0 == BIO_should_retry(SSL_get_wbio(client->ssl_channel)))
             {
-                break;
+                log_error("system call `BIO_read` failed with error %d", ERR_get_error());
+
+                goto _e1;
             }
 
-            log_error("system call `BIO_read` failed with error %d", ERR_get_error());
-
-            goto _e1;
+            break;
         }
 
-        buffer->data_ptr += length;
         buffer->data_size += length;
+
+        log_debug("%d bytes encrypted data are read from ssl channel", length);
 
         if (1 == is_new_buffer)
         {
@@ -784,8 +757,110 @@ int net_client_read_data_from_ssl(struct net_client* client)
     return 0;
 }
 
+int net_client_send_user_data(struct net_client* client,
+    char* data, int size, struct net_worker* worker)
+{
+    log_function_entry();
+
+    int data_size = size;
+
+    while (data_size > 0)
+    {
+        int is_new_buffer = 0, available_size = CONFIG_SEND_BUFFER_SIZE;
+
+        struct net_buffer* buffer = net_client_get_back_send_buffer(client);
+        if (NULL == buffer || 0 >= (available_size = net_buffer_get_available_size(buffer)))
+        {
+            buffer = net_buffer_create(CONFIG_SEND_BUFFER_SIZE);
+            if (NULL == buffer)
+            {
+                log_error("function call `net_buffer_create` failed");
+            _e1:
+                log_function_leave();
+
+                return -1;
+            }
+        }
+
+        int copy_size = data_size > available_size ? available_size : data_size;
+
+        memcpy(buffer->data_ptr + buffer->data_size, data, copy_size);
+
+        buffer->data_size += copy_size;
+
+        if (1 == is_new_buffer)
+        {
+            net_client_push_send_buffer(client, buffer);
+        }
+
+        data += copy_size;
+        data_size -= copy_size;
+    }
+
+    if (-1 == net_client_send_data(client, worker))
+    {
+        log_error("function call `net_client_send_data` failed");
+
+        goto _e1;
+    }
+
+    log_function_leave();
+
+    return size - data_size;
+}
+
+int net_client_send_user_data_ssl(struct net_client* client,
+    char* data, int size, struct net_worker* worker)
+{
+    log_function_entry();
+
+    int data_size = size;
+
+    while (data_size > 0)
+    {
+        int length = SSL_write(client->ssl_channel, data, data_size);
+        if (0 >= length)
+        {
+            int ssl_ret = SSL_get_error(client->ssl_channel, length);
+            if (SSL_ERROR_WANT_READ == ssl_ret || SSL_ERROR_WANT_WRITE == ssl_ret)
+            {
+                break;
+            }
+
+            log_error("system call `SSL_write` failed with error %d", ssl_ret);
+        _e1:
+            log_function_leave();
+
+            return -1;
+        }
+
+        if (-1 == net_client_read_data_from_ssl(client))
+        {
+            log_error("function call `net_client_read_data_from_ssl` failed");
+
+            goto _e1;
+        }
+
+        data += length;
+        data_size -= length;
+    }
+
+    if (-1 == net_client_send_data(client, worker))
+    {
+        log_error("function call `net_client_send_data` failed");
+
+        goto _e1;
+    }
+
+    log_function_leave();
+
+    return size - data_size;
+}
+
 int net_client_finish_ssl_connection(struct net_client* client, struct net_worker* worker)
 {
+    log_function_entry();
+
     int ssl_ret = SSL_accept(client->ssl_channel);
     if (0 >= ssl_ret)
     {
@@ -794,6 +869,8 @@ int net_client_finish_ssl_connection(struct net_client* client, struct net_worke
         {
             log_error("system call `SSL_accept` failed with error %d", ssl_ret);
         _e1:
+            log_function_leave();
+
             return -1;
         }
     }
@@ -815,60 +892,106 @@ int net_client_finish_ssl_connection(struct net_client* client, struct net_worke
     if (1 == SSL_is_init_finished(client->ssl_channel))
     {
         client->client_status = NET_CLIENT_STATUS_CONNECTED;
+
+        log_debug("client %p with socket %d finished ssl connection",
+            client, client->client_socket);
     }
+
+    log_function_leave();
 
     return 0;
 }
 
-int net_client_send_hello_world_test(struct net_client* client, struct net_worker* worker)
+int net_client_write_data_to_ssl(struct net_client* client)
 {
-    char* http_resonse = "HTTP/1.1 200 OK\r\n"
-                         "Server: Faker/1.0\r\n"
-                         "Content-Type: text/html; charset=utf-8\r\n"
-                         "Content-Length: 11\r\n\r\n"
-                         "hello world";
-    if (NULL != client->ssl_channel)
+    log_function_entry();
+
+    while (1)
     {
-        int ssl_ret = SSL_write(client->ssl_channel, http_resonse, strlen(http_resonse));
-        if (0 >= ssl_ret)
+        struct net_buffer* buffer = net_client_get_top_recv_buffer(client);
+        if (NULL == buffer)
         {
-            return -1;
+            break;
         }
 
-        if (-1 == net_client_read_data_from_ssl(client))
+        while (buffer->data_size > 0)
         {
+            int length = BIO_write(SSL_get_rbio(client->ssl_channel),
+                buffer->data_ptr, buffer->data_size);
+
+            if (0 >= length)
+            {
+                if (0 == BIO_should_retry(SSL_get_rbio(client->ssl_channel)))
+                {
+                    log_error("system call `BIO_write` failed with error %d", ERR_get_error());
+
+                    log_function_leave();
+
+                    return -1;
+                }
+
+                goto _end;
+            }
+
+            log_debug("%d bytes data are written to ssl channel", length);
+
+            buffer->data_ptr += length;
+            buffer->data_size -= length;
+        }
+
+        net_client_remove_recv_buffer(client, buffer);
+
+        net_buffer_destroy(buffer);
+    }
+
+_end:
+    log_function_leave();
+
+    return 0;
+}
+
+int net_client_send_hello_world(struct net_client* client, struct net_worker* worker)
+{
+    log_function_entry();
+
+    char* http_response = "HTTP/1.1 200 OK\r\n"
+                          "Content-Type: text/html; charset=utf-8\r\n"
+                          "Content-Length: 11\r\n"
+                          "Server: Faker/1.1\r\n\r\n"
+                          "Hello World";
+
+    if (NULL != client->ssl_channel)
+    {
+        if (-1 == net_client_send_user_data_ssl(client,
+            http_response, strlen(http_response), worker))
+        {
+            log_error("function call `net_client_send_user_data_ssl` failed");
+        _e1:
+            log_function_leave();
+
             return -1;
         }
     }
     else
     {
-        struct net_buffer* buffer = net_buffer_create(CONFIG_SEND_BUFFER_SIZE);
-        if (NULL == buffer)
+        if (-1 == net_client_send_user_data(client,
+            http_response, strlen(http_response), worker))
         {
-            log_error("function call `net_buffer_create` failed");
-        _e1:
-            return -1;
+            log_error("function call `net_client_send_user_data` failed");
+
+            goto _e1;
         }
-
-        memcpy(buffer->data_ptr, http_resonse, strlen(http_resonse));
-
-        buffer->data_size = strlen(http_resonse);
-
-        net_client_push_send_buffer(client, buffer);
     }
 
-    if (-1 == net_client_send_data(client, worker))
-    {
-        log_error("function call `net_client_send_data` failed");
+    log_function_leave();
 
-        goto _e1;
-    }
-
-    return -1;
+    return 0;
 }
 
-int net_client_handle_app_data(struct net_client* client, struct net_worker* worker)
+int net_client_handle_user_data(struct net_client* client, struct net_worker* worker)
 {
+    log_function_entry();
+
     while (1)
     {
         struct net_buffer* buffer = net_client_get_top_data_buffer(client);
@@ -885,15 +1008,17 @@ int net_client_handle_app_data(struct net_client* client, struct net_worker* wor
                 break;
             }
 
-            if (-1 == net_client_send_hello_world_test(client, worker))
+            if (-1 == net_client_send_hello_world(client, worker))
             {
+                log_error("function call `net_client_send_hello_world` failed");
+
                 return -1;
             }
 
-            int length = ptr - buffer->data_ptr + 4;
+            int offset = ptr - buffer->data_ptr + 4;
 
-            buffer->data_ptr += length;
-            buffer->data_size -= length;
+            buffer->data_ptr += offset;
+            buffer->data_size -= offset;
         }
 
         net_client_remove_data_buffer(client, buffer);
@@ -901,119 +1026,162 @@ int net_client_handle_app_data(struct net_client* client, struct net_worker* wor
         net_buffer_destroy(buffer);
     }
 
-    return -1;
-}
-
-int net_client_handle_ssl_data(struct net_client* client, struct net_worker* worker)
-{
-    if (-1 == net_client_write_data_to_ssl(client))
-    {
-        log_error("function call `net_client_write_data_to_ssl` failed");
-    _e1:
-        return -1;
-    }
-
-    if (NET_CLIENT_STATUS_SSL_WAIT == client->client_status)
-    {
-        if (-1 == net_client_finish_ssl_connection(client, worker))
-        {
-            log_error("function call `net_client_finish_ssl_connection` failed");
-
-            goto _e1;
-        }
-    }
-
-    if (NET_CLIENT_STATUS_CONNECTED == client->client_status)
-    {
-        while (1)
-        {
-            int is_new_buffer = 0;
-
-            struct net_buffer* buffer = net_client_get_back_data_buffer(client);
-            if (NULL == buffer || buffer->data_size >= CONFIG_RECV_BUFFER_SIZE)
-            {
-                buffer = net_buffer_create(CONFIG_RECV_BUFFER_SIZE);
-                if (NULL == buffer)
-                {
-                    log_error("function call `net_buffer_create` failed");
-                    
-                    goto _e1;
-                }
-
-                is_new_buffer = 1;
-            }
-
-            int ssl_ret = SSL_read(client->ssl_channel, buffer->data_ptr + buffer->data_size, 
-                CONFIG_RECV_BUFFER_SIZE - buffer->data_size);
-            if (0 >= ssl_ret)
-            {
-                if (1 == is_new_buffer)
-                {
-                    net_buffer_destroy(buffer);
-                }
-
-                ssl_ret = SSL_get_error(client->ssl_channel, ssl_ret);
-                if (SSL_ERROR_WANT_READ == ssl_ret || SSL_ERROR_WANT_WRITE == ssl_ret)
-                {
-                    break;
-                }
-
-                log_error("system call `SSL_read` failed with error %d", ssl_ret);
-
-                goto _e1;
-            }
-
-            buffer->data_size += ssl_ret;
-
-            if (1 == is_new_buffer)
-            {
-                net_client_push_data_buffer(client, buffer);
-            }
-        }
-
-        if (-1 == net_client_handle_app_data(client, worker))
-        {
-            log_error("function call `net_client_handle_app_data` failed");
-
-            goto _e1;
-        }
-    }
+    log_function_leave();
 
     return 0;
 }
 
-int net_client_receive_data(struct net_client* client, struct net_worker* worker)
+int net_client_handle_ssl_data(struct net_client* client, struct net_worker* worker)
 {
+    log_function_entry();
+
     while (1)
     {
-        int is_new_buffer = 0;
+        int is_new_buffer = 0, available_size = CONFIG_RECV_BUFFER_SIZE;
 
-        struct net_buffer* buffer = NULL;
-
-        if (NULL != client->ssl_channel)
-        {
-            buffer = net_client_get_back_receive_buffer(client);
-        }
-        else
-        {
-            buffer = net_client_get_back_data_buffer(client);
-        }
-        
-        if (NULL == buffer || buffer->data_size >= CONFIG_RECV_BUFFER_SIZE)
+        struct net_buffer* buffer = net_client_get_back_data_buffer(client);
+        if (NULL == buffer || 0 >= (available_size = net_buffer_get_available_size(buffer)))
         {
             buffer = net_buffer_create(CONFIG_RECV_BUFFER_SIZE);
             if (NULL == buffer)
             {
                 log_error("function call `net_buffer_create` failed");
             _e1:
+                log_function_leave();
+
                 return -1;
             }
 
             is_new_buffer = 1;
         }
 
-        int length = recv(client->client_socket, buffer->data_ptr + buffer->data_size, 
-            CONFIG_RECV_BUFFER_SIZE - buffer->data_size, 0);
+        int length = SSL_read(client->ssl_channel,
+            buffer->data_ptr + buffer->data_size, available_size);
+        if (0 >= length)
+        {
+            if (1 == is_new_buffer)
+            {
+                net_buffer_destroy(buffer);
+            }
+
+            int ssl_ret = SSL_get_error(client->ssl_channel, length);
+            if (SSL_ERROR_WANT_READ == ssl_ret || SSL_ERROR_WANT_WRITE == ssl_ret)
+            {
+                break;
+            }
+
+            log_error("system call `SSL_read` failed with error %d", ssl_ret);
+
+            goto _e1;
+        }
+
+        buffer->data_size += length;
+
+        log_debug("%d bytes user data are read from ssl channel", length);
+        
+        if (1 == is_new_buffer)
+        {
+            net_client_push_data_buffer(client, buffer);
+        }
+    }
+
+    if (-1 == net_client_handle_user_data(client, worker))
+    {
+        log_error("function call `net_client_handle_user_data` failed");
+
+        goto _e1;
+    }
+
+    log_function_leave();
+
+    return 0;
+}
+
+int net_client_handle_received_data(struct net_client* client, struct net_worker* worker)
+{
+    log_function_entry();
+
+    if (NULL != client->ssl_channel)
+    {
+        if (-1 == net_client_write_data_to_ssl(client))
+        {
+            log_error("function call `net_client_write_data_to_ssl` failed");
+        _e1:
+            log_function_leave();
+
+            return -1;
+        }
+
+        if (NET_CLIENT_STATUS_SSL_WAIT == client->client_status)
+        {
+            if (-1 == net_client_finish_ssl_connection(client, worker))
+            {
+                log_error("function call `net_client_finish_ssl_connection` failed");
+
+                goto _e1;
+            }
+        }
+
+        if (NET_CLIENT_STATUS_CONNECTED == client->client_status)
+        {
+            if (-1 == net_client_handle_ssl_data(client, worker))
+            {
+                log_error("function call `net_client_handle_ssl_data` failed");
+
+                goto _e1;
+            }
+        }
+    }
+    else
+    {
+        if (-1 == net_client_handle_user_data(client, worker))
+        {
+            log_error("function call `net_client_handle_user_data` failed");
+
+            goto _e1;
+        }
+    }
+
+    log_function_leave();
+
+    return 0;
+}
+
+int net_client_receive_data(struct net_client* client, struct net_worker* worker)
+{
+    log_function_entry();
+
+    while (1)
+    {
+        int is_new_buffer = 0, available_size = CONFIG_RECV_BUFFER_SIZE;
+
+        struct net_buffer* buffer = NULL;
+        if (NULL != client->ssl_channel)
+        {
+            buffer = net_client_get_back_recv_buffer(client);
+        }
+        else
+        {
+            buffer = net_client_get_back_data_buffer(client);
+        }
+
+        if (NULL == buffer || 0 >= (available_size = net_buffer_get_available_size(buffer)))
+        {
+            buffer = net_buffer_create(CONFIG_RECV_BUFFER_SIZE);
+            if (NULL == buffer)
+            {
+                log_error("function call `net_buffer_create` failed");
+            _e1:
+                log_function_leave();
+
+                return -1;
+            }
+
+            is_new_buffer = 1;
+        }
+
+        int length = recv(client->client_socket, 
+            buffer->data_ptr + buffer->data_size, available_size, 0);
         if (0 >= length)
         {
             if (1 == is_new_buffer)
@@ -1023,8 +1191,6 @@ int net_client_receive_data(struct net_client* client, struct net_worker* worker
 
             if (-1 == length && EAGAIN == errno)
             {
-                log_debug("need to recv again later");
-
                 break;
             }
 
@@ -1038,11 +1204,14 @@ int net_client_receive_data(struct net_client* client, struct net_worker* worker
 
         buffer->data_size += length;
 
+        log_debug("%d bytes data are received from client %p with socket %d",
+            length, client, client->client_socket);
+
         if (1 == is_new_buffer)
         {
             if (NULL != client->ssl_channel)
             {
-                net_client_push_receive_buffer(client, buffer);
+                net_client_push_recv_buffer(client, buffer);
             }
             else
             {
@@ -1051,24 +1220,14 @@ int net_client_receive_data(struct net_client* client, struct net_worker* worker
         }
     }
 
-    if (NULL != client->ssl_channel)
+    if (-1 == net_client_handle_received_data(client, worker))
     {
-        if (-1 == net_client_handle_ssl_data(client, worker))
-        {
-            log_error("function call `net_client_handle_ssl_data` failed");
+        log_error("function call `net_client_handle_received_data` failed");
 
-            goto _e1;
-        }
+        goto _e1;
     }
-    else
-    {
-        if (-1 == net_client_handle_app_data(client, worker))
-        {
-            log_error("function call `net_client_handle_app_data` failed");
 
-            goto _e1;
-        }
-    }
+    log_function_leave();
 
     return 0;
 }
@@ -1092,13 +1251,13 @@ void net_client_destroy(struct net_client* client)
 
     while (1)
     {
-        buffer = net_client_get_top_receive_buffer(client);
+        buffer = net_client_get_top_recv_buffer(client);
         if (NULL == buffer)
         {
             break;
         }
 
-        net_client_remove_receive_buffer(client, buffer);
+        net_client_remove_recv_buffer(client, buffer);
 
         net_buffer_destroy(buffer);
     }
@@ -1415,7 +1574,7 @@ int net_server_register_client(struct net_server* server, struct net_client* cli
     event.data.ptr = client;
     event.events = EPOLLIN | EPOLLET;
 
-    client->registered_event = event.events;
+    client->registered_events = event.events;
 
     if (1 == server->ssl_enable)
     {
