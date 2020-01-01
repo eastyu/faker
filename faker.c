@@ -642,7 +642,7 @@ void net_client_push_recv_buffer(struct net_client* client, struct net_buffer* b
 
 int net_client_send_data(struct net_client* client, struct net_worker* worker)
 {
-    log_function_leave();
+    log_function_entry();
 
     struct epoll_event event = { 0 };
     event.data.ptr = client;
@@ -780,6 +780,8 @@ int net_client_send_user_data(struct net_client* client,
 
                 return -1;
             }
+
+            is_new_buffer = 1;
         }
 
         int copy_size = data_size > available_size ? available_size : data_size;
@@ -1833,7 +1835,7 @@ int main(int argc, char const *argv[])
         goto _e1;
     }
 
-    struct net_server* server = net_server_create(listen_socket, 1);
+    struct net_server* server = net_server_create(listen_socket, 0);
     if (NULL == server)
     {
         log_error("function call `net_server_create` failed");
