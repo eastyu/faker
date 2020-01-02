@@ -149,6 +149,11 @@ struct net_server
     struct linked_list __worker;
 };
 
+struct net_faker
+{
+    struct linked_list __server;
+};
+
 int write_log_to_file(int level, const char* file, int line, const char* format, ...)
 {
     if (level < CONFIG_LOG_LEVEL)
@@ -1553,8 +1558,6 @@ void net_server_remove_worker(struct net_server* server, struct net_worker* work
 
 struct net_worker* net_server_find_balanced_worker(struct net_server* server)
 {
-    linked_list_lock(&server->__worker);
-
     struct net_worker* worker = NULL, *temp = NULL;
 
     for (struct list_item* item = server->__worker.head; NULL != item; item = item->next)
@@ -1575,8 +1578,6 @@ struct net_worker* net_server_find_balanced_worker(struct net_server* server)
             continue;
         }
     }
-
-    linked_list_lock(&server->__worker);
 
     return worker;
 }
@@ -1780,6 +1781,8 @@ void net_server_destroy(struct net_server* server)
 
     close(server->epoll_handle);
 
+    close(server->listen_socket);
+
     free(server);
 
     log_debug("server %p is destroyed", server);
@@ -1831,33 +1834,30 @@ int net_server_run_event_loop(struct net_server* server, int worker_size)
     return 0;
 }
 
-int main(int argc, char const *argv[])
+void net_faker_push_server(struct net_faker* faker, struct net_server* server)
 {
-    SSL_library_init();
+    linked_list_push_item(&faker->__server, &server->__item);
+}
 
-    int signums[] = { SIGINT, SIGUSR1, SIGUSR2 };
-    if (-1 == signal_init(signums, sizeof(signums) / sizeof(int)))
-    {
-        log_error("function call `signal_init` failed");
-    _e1:
-        return -1;
-    }
+void net_faker_remove_server(struct net_faker* faker, struct net_server* server)
+{
+    linked_list_remove_item(&faker->__server, &server->__item);
+}
 
-    sigset_t sigset = { { 0 } };
+struct net_server* net_faker_get_top_server(struct net_faker* faker)
+{
+    struct list_item* item = linked_list_get_top_item(&faker->__server);
+    return container_of(item, struct net_server, __item);
+}
 
-    if (-1 == sigfillset(&sigset))
-    {
-        log_error("system call `sigfillset` failed with error %d", errno);
-
-        goto _e1;
-    }
-
+int net_faker_launch_server(struct net_faker* faker, char* bind_addr, int listen_port)
+{
     int listen_socket = create_listen_socket_and_bind(CONFIG_BIND_ADDRESS, CONFIG_LISTEN_PORT);
     if (-1 == listen_socket)
     {
         log_error("function call `create_listen_socket_and_bind` failed");
-
-        goto _e1;
+    _e1:
+        return -1;
     }
 
     struct net_server* server = net_server_create(listen_socket, 0);
@@ -1879,6 +1879,95 @@ int main(int argc, char const *argv[])
         goto _e2;
     }
 
+    net_faker_push_server(faker, server);
+
+    return 0;
+}
+
+void net_faker_broadcast_signal(struct net_faker* faker, int signum)
+{
+    for (struct list_item* item = faker->__server.head; NULL != item; item = item->next)
+    {
+        struct net_server* server = container_of(item, struct net_server, __item);
+
+        union sigval sig_data = { .sival_ptr = server };
+        int result = pthread_sigqueue(server->server_thread, signum, sig_data);
+        if (0 != result)
+        {
+            log_error("system call `pthread_sigqueue` failed with error %d", result);
+        }
+    }
+}
+
+struct net_faker* net_faker_create()
+{
+    struct net_faker* faker = calloc(1, sizeof(struct net_faker));
+    if (NULL == faker)
+    {
+        log_error("system call `calloc` failed with error %d", errno);
+    _e1:
+        return NULL;
+    }
+
+    if (-1 == net_faker_launch_server(faker, CONFIG_BIND_ADDRESS, CONFIG_LISTEN_PORT))
+    {
+        log_error("function call `net_faker_launch_server` failed");
+
+        free(faker);
+
+        goto _e1;
+    }
+
+    return faker;
+}
+
+void net_faker_destroy(struct net_faker* faker)
+{
+    while (1)
+    {
+        struct net_server* server = net_faker_get_top_server(faker);
+        if (NULL == server)
+        {
+            break;
+        }
+
+        net_faker_remove_server(faker, server);
+
+        net_server_destroy(server);
+    }
+
+    free(faker);
+}
+
+int main(int argc, char const *argv[])
+{
+    SSL_library_init();
+
+    int signums[] = { SIGINT, SIGUSR1, SIGUSR2 };
+    if (-1 == signal_init(signums, sizeof(signums) / sizeof(int)))
+    {
+        log_error("function call `signal_init` failed");
+    _e1:
+        return -1;
+    }
+
+    sigset_t sigset = { { 0 } };
+
+    if (-1 == sigfillset(&sigset))
+    {
+        log_error("system call `sigfillset` failed with error %d", errno);
+
+        goto _e1;
+    }
+
+    struct net_faker* faker = net_faker_create();
+    if (NULL == faker)
+    {
+        log_error("function call `net_faker_create` failed");
+
+        goto _e1;
+    }
+
     while (1)
     {
         int signum = 0;
@@ -1895,18 +1984,11 @@ int main(int argc, char const *argv[])
         }
         else
         {
-            union sigval sig_data = { .sival_ptr = server };
-            int result = pthread_sigqueue(server->server_thread, signum, sig_data);
-            if (0 != result)
-            {
-                log_error("system call `pthread_sigqueue` failed with error %d", result);
-            }
+            net_faker_broadcast_signal(faker, signum);
         }
     }
 
-    net_server_destroy(server);
-
-    close(listen_socket);
+    net_faker_destroy(faker);
 
     return 0;
 }
