@@ -1850,7 +1850,8 @@ struct net_server* net_faker_get_top_server(struct net_faker* faker)
     return container_of(item, struct net_server, __item);
 }
 
-int net_faker_launch_server(struct net_faker* faker, char* bind_addr, int listen_port)
+int net_faker_launch_server(struct net_faker* faker, char* bind_addr,
+    int listen_port, int ssl_enable)
 {
     int listen_socket = create_listen_socket_and_bind(CONFIG_BIND_ADDRESS, CONFIG_LISTEN_PORT);
     if (-1 == listen_socket)
@@ -1860,7 +1861,7 @@ int net_faker_launch_server(struct net_faker* faker, char* bind_addr, int listen
         return -1;
     }
 
-    struct net_server* server = net_server_create(listen_socket, 0);
+    struct net_server* server = net_server_create(listen_socket, ssl_enable);
     if (NULL == server)
     {
         log_error("function call `net_server_create` failed");
@@ -1909,7 +1910,7 @@ struct net_faker* net_faker_create()
         return NULL;
     }
 
-    if (-1 == net_faker_launch_server(faker, CONFIG_BIND_ADDRESS, CONFIG_LISTEN_PORT))
+    if (-1 == net_faker_launch_server(faker, CONFIG_BIND_ADDRESS, CONFIG_LISTEN_PORT, 0))
     {
         log_error("function call `net_faker_launch_server` failed");
 
