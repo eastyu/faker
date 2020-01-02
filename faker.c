@@ -277,6 +277,7 @@ int create_listen_socket_and_bind(const char* bind_addr, int listen_port)
         log_error("system call `bind` failed with error %d", errno);
     _e2:
         close(listen_socket);
+
         goto _e1;
     }
 
@@ -438,6 +439,7 @@ SSL_CTX* ssl_ctx_create()
             ERR_get_error());
     _e2:
         SSL_CTX_free(ssl_ctx);
+
         goto _e1;
     }
 
@@ -489,6 +491,7 @@ SSL* ssl_channel_create(SSL_CTX* ssl_ctx)
         log_error("system call `BIO_new` failed with error %d", ERR_get_error());
     _e2:
         SSL_free(ssl_channel);
+
         goto _e1;
     }
 
@@ -498,6 +501,7 @@ SSL* ssl_channel_create(SSL_CTX* ssl_ctx)
         log_error("system call `BIO_new` failed with error %d", ERR_get_error());
 
         BIO_free(rbio);
+
         goto _e2;
     }
 
@@ -711,6 +715,8 @@ _end:
 
 int net_client_read_data_from_ssl(struct net_client* client)
 {
+    log_function_entry();
+
     while (1)
     {
         int is_new_buffer = 0, available_size = CONFIG_SEND_BUFFER_SIZE;
@@ -723,6 +729,8 @@ int net_client_read_data_from_ssl(struct net_client* client)
             {
                 log_error("function call `net_buffer_create` failed");
             _e1:
+                log_function_leave();
+
                 return -1;
             }
 
@@ -757,6 +765,8 @@ int net_client_read_data_from_ssl(struct net_client* client)
             net_client_push_send_buffer(client, buffer);
         }
     }
+
+    log_function_leave();
 
     return 0;
 }
