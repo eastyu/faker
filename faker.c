@@ -681,7 +681,7 @@ int net_client_send_data(struct net_client* client, struct net_worker* worker)
                 {
                     log_error("system call `send` failed with error %d", errno);
                 }
-                
+
             _e1:
                 log_function_leave();
 
@@ -1099,7 +1099,7 @@ int net_client_handle_ssl_data(struct net_client* client, struct net_worker* wor
         buffer->data_size += length;
 
         log_debug("%d bytes user data are read from ssl channel", length);
-        
+
         if (1 == is_new_buffer)
         {
             net_client_push_data_buffer(client, buffer);
