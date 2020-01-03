@@ -1850,15 +1850,14 @@ struct net_server* net_faker_get_top_server(struct net_faker* faker)
     return container_of(item, struct net_server, __item);
 }
 
-int net_faker_launch_server(struct net_faker* faker, char* bind_addr,
-    int listen_port, int ssl_enable)
+struct net_server* launch_server(char* bind_addr, int listen_port, int ssl_enable)
 {
-    int listen_socket = create_listen_socket_and_bind(CONFIG_BIND_ADDRESS, CONFIG_LISTEN_PORT);
+    int listen_socket = create_listen_socket_and_bind(bind_addr, listen_port);
     if (-1 == listen_socket)
     {
         log_error("function call `create_listen_socket_and_bind` failed");
     _e1:
-        return -1;
+        return NULL;
     }
 
     struct net_server* server = net_server_create(listen_socket, ssl_enable);
@@ -1880,9 +1879,7 @@ int net_faker_launch_server(struct net_faker* faker, char* bind_addr,
         goto _e2;
     }
 
-    net_faker_push_server(faker, server);
-
-    return 0;
+    return server;
 }
 
 void net_faker_broadcast_signal(struct net_faker* faker, int signum)
@@ -1910,14 +1907,17 @@ struct net_faker* net_faker_create()
         return NULL;
     }
 
-    if (-1 == net_faker_launch_server(faker, CONFIG_BIND_ADDRESS, CONFIG_LISTEN_PORT, 0))
+    struct net_server* server = launch_server(CONFIG_BIND_ADDRESS, CONFIG_LISTEN_PORT, 0);
+    if (NULL == server)
     {
-        log_error("function call `net_faker_launch_server` failed");
+        log_error("function call `launch_server` failed");
 
         free(faker);
 
         goto _e1;
     }
+
+    net_faker_push_server(faker, server);
 
     return faker;
 }
