@@ -28,6 +28,9 @@
 #define CONFIG_SEND_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
 #define CONFIG_BIND_ADDRESS                 "0.0.0.0"
 #define CONFIG_LISTEN_PORT                  9999
+#define CONFIG_SSL_ENABLE                   1
+#define CONFIG_SERVER_SIZE                  1
+#define CONFIG_WORKER_SIZE                  2
 #define CONFIG_CRT_FILE                     "server.crt"
 #define CONFIG_KEY_FILE                     "server.key"
 #define CONFIG_CIPHER_SUIT                  "ECDHE-ECDSA-AES256-GCM-SHA384:"    \
@@ -1303,6 +1306,8 @@ void net_client_destroy(struct net_client* client)
 
     log_debug("client %p with socket %d is destroyed", client, client->client_socket);
 
+    close(client->client_socket);
+
     free(client);
 }
 
@@ -1333,8 +1338,6 @@ void net_worker_close_client(struct net_worker* worker, struct net_client* clien
         client, client->client_socket, client->client_status, reason);
 
     epoll_ctl(worker->epoll_handle, EPOLL_CTL_DEL, client->client_socket, NULL);
-
-    close(client->client_socket);
 
     net_client_destroy(client);
 }
@@ -1478,7 +1481,7 @@ struct net_worker* net_worker_create(int ssl_enable)
     if (-1 == linked_list_initialize(&worker->__client))
     {
         log_error("function call `linked_list_initialize` failed");
-    _e4:
+
         ssl_ctx_destroy(worker->ssl_ctx);
 
         goto _e3;
@@ -1486,19 +1489,22 @@ struct net_worker* net_worker_create(int ssl_enable)
 
     worker->worker_status = NET_WORKER_STATUS_READY;
 
+    log_debug("worker %p is created", worker);
+
+    return worker;
+}
+
+int net_worker_run(struct net_worker* worker)
+{
     int result = pthread_create(&worker->worker_thread, NULL, net_worker_thread_main, worker);
     if (0 != result)
     {
         log_error("system call `pthread_create` failed with error %d", result);
 
-        linked_list_uninitialize(&worker->__client);
-
-        goto _e4;
+        return -1;
     }
 
-    log_debug("worker %p is created", worker);
-
-    return worker;
+    return 0;
 }
 
 void net_worker_destroy(struct net_worker* worker)
@@ -1712,7 +1718,7 @@ void* net_server_thread_main(void* args)
     return NULL;
 }
 
-struct net_server* net_server_create(int listen_socket, int ssl_enable)
+struct net_server* net_server_create(const char* bind_addr, int listen_port, int ssl_enable)
 {
     struct net_server* server = calloc(1, sizeof(struct net_server));
     if (NULL == server)
@@ -1722,14 +1728,24 @@ struct net_server* net_server_create(int listen_socket, int ssl_enable)
         return NULL;
     }
 
-    server->epoll_handle = epoll_create(EPOLL_EVENT_SIZE);
-    if (-1 == server->epoll_handle)
+    int listen_socket = create_listen_socket_and_bind(bind_addr, listen_port);
+    if (-1 == listen_socket)
     {
-        log_error("system call `epoll_create` failed with error %d", errno);
+        log_error("function call `create_listen_socket_and_bind` failed");
     _e2:
         free(server);
 
         goto _e1;
+    }
+
+    server->epoll_handle = epoll_create(EPOLL_EVENT_SIZE);
+    if (-1 == server->epoll_handle)
+    {
+        log_error("system call `epoll_create` failed with error %d", errno);
+    _e3:
+        close(listen_socket);
+
+        goto _e2;
     }
 
     struct epoll_event event = { 0 };
@@ -1742,7 +1758,20 @@ struct net_server* net_server_create(int listen_socket, int ssl_enable)
 
         close(server->epoll_handle);
 
-        goto _e2;
+        goto _e3;
+    }
+
+    for (int i = 0; i < CONFIG_WORKER_SIZE; i++)
+    {
+        struct net_worker* worker = net_worker_create(ssl_enable);
+        if (NULL == worker)
+        {
+            log_error("function call `net_worker_create` failed");
+
+            continue;
+        }
+
+        net_server_push_worker(server, worker);
     }
 
     server->server_status = NET_SERVER_STATUS_READY;
@@ -1788,21 +1817,8 @@ void net_server_destroy(struct net_server* server)
     log_debug("server %p is destroyed", server);
 }
 
-int net_server_run_event_loop(struct net_server* server, int worker_size)
+int net_server_run(struct net_server* server)
 {
-    for (int i = 0; i < worker_size; i++)
-    {
-        struct net_worker* worker = net_worker_create(server->ssl_enable);
-        if (NULL == worker)
-        {
-            log_error("function call `net_worker_create` failed");
-
-            continue;
-        }
-
-        net_server_push_worker(server, worker);
-    }
-
     if (0 == net_server_get_worker_size(server))
     {
         log_error("no worker in the list");
@@ -1810,23 +1826,22 @@ int net_server_run_event_loop(struct net_server* server, int worker_size)
         return -1;
     }
 
+    for (struct list_item* item = server->__worker.head; NULL != item; item = item->next)
+    {
+        struct net_worker* worker = container_of(item, struct net_worker, __item);
+
+        if (-1 == net_worker_run(worker))
+        {
+            log_error("function call `net_worker_run` failed");
+        
+            goto _e1;
+        }
+    }
+
     int result = pthread_create(&server->server_thread, NULL, net_server_thread_main, server);
     if (0 != result)
     {
         log_error("system call `pthread_create` failed with error %d", result);
-
-        while (1)
-        {
-            struct net_worker* worker = net_server_get_top_worker(server);
-            if (NULL == worker)
-            {
-                break;
-            }
-
-            net_server_remove_worker(server, worker);
-
-            net_worker_destroy(worker);
-        }
 
         goto _e1;
     }
@@ -1844,42 +1859,15 @@ void net_faker_remove_server(struct net_faker* faker, struct net_server* server)
     linked_list_remove_item(&faker->__server, &server->__item);
 }
 
+int net_faker_get_server_size(struct net_faker* faker)
+{
+    return linked_list_get_size(&faker->__server);
+}
+
 struct net_server* net_faker_get_top_server(struct net_faker* faker)
 {
     struct list_item* item = linked_list_get_top_item(&faker->__server);
     return container_of(item, struct net_server, __item);
-}
-
-struct net_server* launch_server(char* bind_addr, int listen_port, int ssl_enable)
-{
-    int listen_socket = create_listen_socket_and_bind(bind_addr, listen_port);
-    if (-1 == listen_socket)
-    {
-        log_error("function call `create_listen_socket_and_bind` failed");
-    _e1:
-        return NULL;
-    }
-
-    struct net_server* server = net_server_create(listen_socket, ssl_enable);
-    if (NULL == server)
-    {
-        log_error("function call `net_server_create` failed");
-    _e2:
-        close(listen_socket);
-
-        goto _e1;
-    }
-
-    if (-1 == net_server_run_event_loop(server, CONFIG_WORKER_SIZE_PER_SERVER))
-    {
-        log_error("function call `net_server_run_event_loop` failed");
-
-        net_server_destroy(server);
-
-        goto _e2;
-    }
-
-    return server;
 }
 
 void net_faker_broadcast_signal(struct net_faker* faker, int signum)
@@ -1897,27 +1885,53 @@ void net_faker_broadcast_signal(struct net_faker* faker, int signum)
     }
 }
 
+int net_faker_run(struct net_faker* faker)
+{
+    if (0 == net_faker_get_server_size(faker))
+    {
+        log_error("no server in the list");
+    _e1:
+        return -1;
+    }
+
+    for (struct list_item* item = faker->__server.head; NULL != item; item = item->next)
+    {
+        struct net_server* server = container_of(item, struct net_server, __item);
+
+        if (-1 == net_server_run(server))
+        {
+            log_error("function call `net_server_run` failed");
+
+            goto _e1;
+        }
+    }
+
+    return 0;
+}
+
 struct net_faker* net_faker_create()
 {
     struct net_faker* faker = calloc(1, sizeof(struct net_faker));
     if (NULL == faker)
     {
         log_error("system call `calloc` failed with error %d", errno);
-    _e1:
+
         return NULL;
     }
 
-    struct net_server* server = launch_server(CONFIG_BIND_ADDRESS, CONFIG_LISTEN_PORT, 0);
-    if (NULL == server)
+    for (int i = 0; i < CONFIG_SERVER_SIZE; i++)
     {
-        log_error("function call `launch_server` failed");
+        struct net_server* server = net_server_create(CONFIG_BIND_ADDRESS,
+            CONFIG_LISTEN_PORT, CONFIG_SSL_ENABLE);
+        if (NULL == server)
+        {
+            log_error("function call `net_server_create` failed");
 
-        free(faker);
+            continue;
+        }
 
-        goto _e1;
+        net_faker_push_server(faker, server);
     }
-
-    net_faker_push_server(faker, server);
 
     return faker;
 }
@@ -1965,6 +1979,15 @@ int main(int argc, char const *argv[])
     if (NULL == faker)
     {
         log_error("function call `net_faker_create` failed");
+
+        goto _e1;
+    }
+
+    if (-1 == net_faker_run(faker))
+    {
+        log_error("function call `net_faker_run` failed");
+
+        net_faker_destroy(faker);
 
         goto _e1;
     }
