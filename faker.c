@@ -1870,21 +1870,6 @@ struct net_server* net_faker_get_top_server(struct net_faker* faker)
     return container_of(item, struct net_server, __item);
 }
 
-void net_faker_broadcast_signal(struct net_faker* faker, int signum)
-{
-    for (struct list_item* item = faker->__server.head; NULL != item; item = item->next)
-    {
-        struct net_server* server = container_of(item, struct net_server, __item);
-
-        union sigval sig_data = { .sival_ptr = server };
-        int result = pthread_sigqueue(server->server_thread, signum, sig_data);
-        if (0 != result)
-        {
-            log_error("system call `pthread_sigqueue` failed with error %d", result);
-        }
-    }
-}
-
 int net_faker_run(struct net_faker* faker)
 {
     if (0 == net_faker_get_server_size(faker))
@@ -1966,15 +1951,6 @@ int main(int argc, char const *argv[])
         return -1;
     }
 
-    sigset_t sigset = { { 0 } };
-
-    if (-1 == sigfillset(&sigset))
-    {
-        log_error("system call `sigfillset` failed with error %d", errno);
-
-        goto _e1;
-    }
-
     struct net_faker* faker = net_faker_create();
     if (NULL == faker)
     {
@@ -1986,10 +1962,19 @@ int main(int argc, char const *argv[])
     if (-1 == net_faker_run(faker))
     {
         log_error("function call `net_faker_run` failed");
-
+    _e2:
         net_faker_destroy(faker);
 
         goto _e1;
+    }
+
+    sigset_t sigset = { { 0 } };
+
+    if (-1 == sigfillset(&sigset))
+    {
+        log_error("system call `sigfillset` failed with error %d", errno);
+
+        goto _e2;
     }
 
     while (1)
@@ -2005,10 +1990,6 @@ int main(int argc, char const *argv[])
             log_debug("main thread received SIGINT");
 
             break;
-        }
-        else
-        {
-            net_faker_broadcast_signal(faker, signum);
         }
     }
 
