@@ -22,7 +22,6 @@
 
 #define CONFIG_CLIENT_DEFAULT_TIMEOUT       (1800 * 1000)
 #define CONFIG_LISTEN_BACKLOG               256
-#define CONFIG_WORKER_SIZE_PER_SERVER       2
 #define CONFIG_LOG_LEVEL                    LOG_LEVEL_DEBUG
 #define CONFIG_RECV_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
 #define CONFIG_SEND_BUFFER_SIZE             (4096 - sizeof(struct net_buffer))
@@ -1831,7 +1830,7 @@ int net_server_run(struct net_server* server)
         if (-1 == net_worker_run(worker))
         {
             log_error("function call `net_worker_run` failed");
-        
+
             goto _e1;
         }
     }
