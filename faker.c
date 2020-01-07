@@ -265,42 +265,6 @@ int signal_init(int* signums, int signal_size)
     return 0;
 }
 
-int create_listen_socket_and_bind(const char* bind_addr, int listen_port)
-{
-    int listen_socket = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
-    if (-1 == listen_socket)
-    {
-        log_error("system call `socket` failed with error %d", errno);
-    _e1:
-        return -1;
-    }
-
-    struct sockaddr_in addr_in = { 0 };
-    addr_in.sin_addr.s_addr = inet_addr(bind_addr);
-    addr_in.sin_family = AF_INET;
-    addr_in.sin_port = htons(listen_port);
-
-    if (-1 == bind(listen_socket, (struct sockaddr*)&addr_in, sizeof(struct sockaddr_in)))
-    {
-        log_error("system call `bind` failed with error %d", errno);
-    _e2:
-        close(listen_socket);
-
-        goto _e1;
-    }
-
-    if (-1 == listen(listen_socket, CONFIG_LISTEN_BACKLOG))
-    {
-        log_error("system call `listen` failed with error %d", errno);
-
-        goto _e2;
-    }
-
-    log_debug("socket %d is listen at %s:%d", listen_socket, bind_addr, listen_port);
-
-    return listen_socket;
-}
-
 int linked_list_initialize(struct linked_list* list)
 {
     if (0 != pthread_spin_init(&list->lock, PTHREAD_PROCESS_PRIVATE))
@@ -1718,6 +1682,42 @@ void* net_server_thread_main(void* args)
     return NULL;
 }
 
+int net_server_bind_address(struct net_server* server, const char* bind_addr, int listen_port)
+{
+    server->listen_socket = socket(AF_INET, SOCK_STREAM | SOCK_NONBLOCK, 0);
+    if (-1 == server->listen_socket)
+    {
+        log_error("system call `socket` failed with error %d", errno);
+    _e1:
+        return -1;
+    }
+
+    struct sockaddr_in addr_in = { 0 };
+    addr_in.sin_addr.s_addr = inet_addr(bind_addr);
+    addr_in.sin_family = AF_INET;
+    addr_in.sin_port = htons(listen_port);
+
+    if (-1 == bind(server->listen_socket, (struct sockaddr*)&addr_in, sizeof(struct sockaddr_in)))
+    {
+        log_error("system call `bind` failed with error %d", errno);
+    _e2:
+        close(server->listen_socket);
+
+        goto _e1;
+    }
+
+    if (-1 == listen(server->listen_socket, CONFIG_LISTEN_BACKLOG))
+    {
+        log_error("system call `listen` failed with error %d", errno);
+
+        goto _e2;
+    }
+
+    log_debug("socket %d is listen at %s:%d", server->listen_socket, bind_addr, listen_port);
+
+    return 0;
+}
+
 struct net_server* net_server_create(const char* bind_addr, int listen_port, int ssl_enable)
 {
     struct net_server* server = calloc(1, sizeof(struct net_server));
@@ -1728,10 +1728,9 @@ struct net_server* net_server_create(const char* bind_addr, int listen_port, int
         return NULL;
     }
 
-    int listen_socket = create_listen_socket_and_bind(bind_addr, listen_port);
-    if (-1 == listen_socket)
+    if (-1 == net_server_bind_address(server, bind_addr, listen_port))
     {
-        log_error("function call `create_listen_socket_and_bind` failed");
+        log_error("function call `net_server_bind_address` failed");
     _e2:
         free(server);
 
@@ -1743,16 +1742,16 @@ struct net_server* net_server_create(const char* bind_addr, int listen_port, int
     {
         log_error("system call `epoll_create` failed with error %d", errno);
     _e3:
-        close(listen_socket);
+        close(server->listen_socket);
 
         goto _e2;
     }
 
     struct epoll_event event = { 0 };
-    event.data.fd = listen_socket;
+    event.data.fd = server->listen_socket;
     event.events = EPOLLET | EPOLLIN;
 
-    if (-1 == epoll_ctl(server->epoll_handle, EPOLL_CTL_ADD, listen_socket, &event))
+    if (-1 == epoll_ctl(server->epoll_handle, EPOLL_CTL_ADD, server->listen_socket, &event))
     {
         log_error("system call `epoll_Ctl` failed with error %d", errno);
 
@@ -1775,10 +1774,9 @@ struct net_server* net_server_create(const char* bind_addr, int listen_port, int
     }
 
     server->server_status = NET_SERVER_STATUS_READY;
-    server->listen_socket = listen_socket;
     server->ssl_enable = ssl_enable;
 
-    log_debug("server %p is created with socket %d", server, listen_socket);
+    log_debug("server %p is created with socket %d", server, server->listen_socket);
 
     return server;
 }
