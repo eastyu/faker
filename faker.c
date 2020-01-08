@@ -1445,7 +1445,10 @@ struct net_worker* net_worker_create(int ssl_enable)
     {
         log_error("function call `linked_list_initialize` failed");
 
-        ssl_ctx_destroy(worker->ssl_ctx);
+        if (NULL != worker->ssl_ctx)
+        {
+            ssl_ctx_destroy(worker->ssl_ctx);
+        }
 
         goto _e3;
     }
