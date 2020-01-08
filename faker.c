@@ -1530,18 +1530,17 @@ void net_server_remove_worker(struct net_server* server, struct net_worker* work
 
 struct net_worker* net_server_find_balanced_worker(struct net_server* server)
 {
-    struct net_worker* worker = NULL, *temp = NULL;
+    struct net_worker* worker = net_server_get_top_worker(server), *temp = NULL;
+    if (NULL == worker)
+    {
+        log_debug("no worker in the list");
 
-    for (struct list_item* item = server->__worker.head; NULL != item; item = item->next)
+        return NULL;
+    }
+
+    for (struct list_item* item = worker->__item.next; NULL != item; item = item->next)
     {
         temp = container_of(item, struct net_worker, __item);
-
-        if (NULL == worker)
-        {
-            worker = temp;
-
-            continue;
-        }
 
         if (net_worker_get_client_size(temp) < net_worker_get_client_size(worker))
         {
