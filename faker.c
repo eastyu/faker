@@ -1563,8 +1563,6 @@ int net_server_register_client(struct net_server* server, struct net_client* cli
         return -1;
     }
 
-    net_server_remove_worker(server, worker);
-
     struct epoll_event event = { 0 };
     event.data.ptr = client;
     event.events = EPOLLIN | EPOLLET;
@@ -1577,8 +1575,6 @@ int net_server_register_client(struct net_server* server, struct net_client* cli
         if (NULL == client->ssl_channel)
         {
             log_error("function call `ssl_channel_create` failed");
-        _e2:
-            net_server_push_worker(server, worker);
 
             goto _e1;
         }
@@ -1592,10 +1588,8 @@ int net_server_register_client(struct net_server* server, struct net_client* cli
 
         net_worker_remove_client(worker, client);
 
-        goto _e2;
+        goto _e1;
     }
-
-    net_server_push_worker(server, worker);
 
     return 0;
 }
